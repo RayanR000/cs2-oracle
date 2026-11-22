@@ -232,8 +232,8 @@ across the then-11 source labels; `aggregator_steam_spot` was added 2026-08-17 a
 that figure. `ops/` tables are UPSERT-or-append-and-dedup and stay under a few MB each;
 `forecast_outcomes` is insert-only (see below).
 
-> ⚠️ **`ops/forecast_outcomes.parquet` exists in two copies and neither is the full scored panel.
-> Query prod Postgres read-only for panel work.** All three stores were measured 2026-08-12, the
+> ⚠️ **Historical (2026-08-12; Postgres is retired, panel work reads the `ops/` partitions through `db/ops_store.py`).**
+> **`ops/forecast_outcomes.parquet` exists in two copies and neither is the full scored panel.** All three stores were measured 2026-08-12, the
 > durable one by fetching its own blob:
 >
 > | store | rows | dates | freshness | `evaluated_at > resolved_at` |
@@ -338,7 +338,8 @@ After: `Item.is_backfilled == 1` (`database.py:127`)
 | 0023 | Add `is_trainable` to `items` — the ORM column that shipped with no migration and crashed prod's aggregator on `SELECT items.is_trainable` |
 | 0024 | Add `exceed_p` to `item_forecasts` — the served exceedance probability |
 
-> `alembic upgrade` cannot replay this chain from scratch on SQLite — revisions
+> **Historical (2026-11-22): the Alembic chain and `backend/migrations/` were deleted with the
+> engine.** What follows is kept as the record of the schema's history. `alembic upgrade` could not replay this chain from scratch on SQLite — revisions
 > `0001`→`0018` contain Postgres-only `ALTER COLUMN ... TYPE` DDL. To rehearse
 > against a SQLite snapshot, `alembic stamp 0018` first; `0019`/`0020` are
 > dialect-aware and apply to both, as are `0021`–`0024`.

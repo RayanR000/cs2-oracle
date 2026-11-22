@@ -353,19 +353,3 @@ def test_load_prod_panel_runs_against_the_real_schema():
     assert len(panel) == 2
     assert panel.sort_values("forecast_date")["prior_width_ratio"].tolist() == [1.0, 1.0]
     engine.dispose()
-
-
-def test_prove_equal_passes_when_the_stores_match_and_fails_when_one_row_differs(monkeypatch):
-    import database
-
-    from tests._ops_mirror import mirror_session_to_ops
-
-    s, engine = _seeded_session()
-    mirror_session_to_ops(s)
-    monkeypatch.setattr(database, "SessionLocal", lambda: s)
-    assert mcp.prove_equal() == 0
-
-    s.execute(database.ForecastOutcome.__table__.update().values(actual_price=99.0))
-    s.commit()
-    assert mcp.prove_equal() == 1
-    engine.dispose()

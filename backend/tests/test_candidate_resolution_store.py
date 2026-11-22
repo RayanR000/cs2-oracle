@@ -73,7 +73,7 @@ def _partition_candidate(cid, item_id=5):
     )
 
 
-def test_plan_is_identical_from_both_stores(monkeypatch):
+def test_plan_resolves_production_matched_candidates(monkeypatch):
     _stub_archive(monkeypatch)
     session = _db()
     _with_slug(session)
@@ -83,12 +83,9 @@ def test_plan_is_identical_from_both_stores(monkeypatch):
     _cand(session, item_id=6, name="archive_leg")  # no production row, no slug: unresolvable
     mirror_session_to_ops(session)
 
-    store_rows, store_stats = _plan(_store())
-    pg_rows, pg_stats = _plan(ops_store.pg_reader(session))
+    store_rows, _ = _plan(_store())
 
     assert len(store_rows) == 2
-    pd.testing.assert_frame_equal(_norm(store_rows), _norm(pg_rows), check_dtype=False)
-    assert store_stats == pg_stats
 
 
 def test_plan_resolves_partition_only_candidates(monkeypatch):

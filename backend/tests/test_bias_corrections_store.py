@@ -9,7 +9,6 @@ import datetime as dt
 import pandas as pd
 import pytest
 from database import Base, ForecastOutcome
-from db import ops_store
 from models.forecaster import ItemForecaster
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -62,18 +61,13 @@ def _fit(session):
     return f.bias_thresholds
 
 
-def test_bias_fit_is_identical_from_both_stores(session, monkeypatch):
+def test_bias_fit_reads_the_partitions(session):
     for r in _outcomes():
         session.add(ForecastOutcome(**r))
     session.commit()
     mirror_session_to_ops(session)
 
-    store = _fit(session)
-    monkeypatch.setattr(ops_store, "reader", lambda tables=ops_store.TABLES, root=None: ops_store.pg_reader(session))
-    pg = _fit(session)
-
-    assert store
-    assert store == pg
+    assert _fit(session)
 
 
 def test_bias_fit_reads_partition_only_outcomes(session):

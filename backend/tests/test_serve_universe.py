@@ -167,13 +167,3 @@ def test_served_items_reads_the_partitions_not_postgres(session):
     session.query(Item).filter(Item.id == 2).delete()
     session.commit()
     assert YOUNG_OLD_ENOUGH in serve_universe.served_items(dt.date(2026, 10, 1))
-
-
-def test_served_items_is_the_same_from_either_store(session):
-    from db import ops_store
-
-    from tests._ops_mirror import mirror_session_to_ops
-
-    mirror_session_to_ops(session)
-    for day in (dt.date(2026, 9, 14), dt.date(2026, 9, 15), dt.date(2026, 10, 1)):
-        assert serve_universe.served_items(day) == serve_universe.served_items(day, ops_store.pg_reader(session))

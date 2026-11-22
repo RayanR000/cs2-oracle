@@ -315,9 +315,6 @@ jobs:
       - name: Verify forecasts were persisted
         if: always() && steps.mode.outputs.mode != 'train-only'
         working-directory: ./backend
-        env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
-          ENVIRONMENT: production
         run: python scripts/check_forecast_freshness.py
 
       # Deliberately NOT conditioned on success. Training finishes and writes

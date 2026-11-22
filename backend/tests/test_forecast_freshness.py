@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from scripts.check_forecast_freshness import freshness_verdict, newest_forecast_date, postgres_note
+from scripts.check_forecast_freshness import freshness_verdict, newest_forecast_date
 
 TODAY = date(2026, 8, 3)
 YESTERDAY = date(2026, 8, 2)
@@ -59,39 +59,20 @@ class TestFreshnessVerdict:
         assert ok is True
 
 
-class TestPostgresNote:
-    def test_postgres_level_with_the_partitions_says_nothing(self):
-        assert postgres_note(TODAY, TODAY) is None
-
-    def test_postgres_behind_the_partitions_is_a_notice(self):
-        note = postgres_note(YESTERDAY, TODAY)
-        assert note.startswith("::notice")
-        assert "2026-08-02" in note and "2026-08-03" in note
-
-    def test_unreadable_postgres_is_a_notice(self):
-        assert postgres_note(None, TODAY).startswith("::notice")
-
-    def test_postgres_ahead_says_nothing_here(self):
-        """The partitions being behind is the verdict's job, not the note's."""
-        assert postgres_note(TODAY, YESTERDAY) is None
-
-
-class TestMainDoesNotGateOnPostgres:
-    def _run(self, monkeypatch, store, db):
+class TestMainReadsOnlyThePartitions:
+    def _run(self, monkeypatch, store):
         import scripts.check_forecast_freshness as mod
 
         monkeypatch.setattr(mod, "_store_newest", lambda: store)
-        monkeypatch.setattr(mod, "_db_newest", lambda: db)
         monkeypatch.setattr(mod, "_shadow_inputs", lambda: ([], set()))
         monkeypatch.setattr("sys.argv", ["check_forecast_freshness.py", "--expected-date", "2026-08-03"])
         return mod.main()
 
-    def test_a_stale_postgres_passes_when_the_partitions_are_current(self, monkeypatch, capsys):
-        assert self._run(monkeypatch, TODAY, date(2026, 7, 30)) == 0
-        assert "::notice" in capsys.readouterr().out
+    def test_current_partitions_pass(self, monkeypatch):
+        assert self._run(monkeypatch, TODAY) == 0
 
-    def test_current_postgres_does_not_rescue_stale_partitions(self, monkeypatch):
-        assert self._run(monkeypatch, YESTERDAY, TODAY) == 1
+    def test_stale_partitions_fail(self, monkeypatch):
+        assert self._run(monkeypatch, YESTERDAY) == 1
 
 
 class TestStoreReads:
@@ -117,15 +98,6 @@ class TestStoreReads:
 
         assert mod._store_newest() is None
 
-    def test_a_failed_postgres_read_is_none_not_a_crash(self, monkeypatch):
-        import scripts.check_forecast_freshness as mod
-
-        def boom():
-            raise RuntimeError("DiskFull")
-
-        monkeypatch.setattr(mod, "SessionLocal", boom)
-        assert mod._db_newest() is None
-
 
 class TestExpectedDateDefault:
     """The default expected date must follow the dump boundary, not the clock.
@@ -148,7 +120,6 @@ class TestExpectedDateDefault:
             seen["expected"] = expected
             return True, "stubbed"
 
-        monkeypatch.setattr(mod, "_db_newest", lambda: TODAY)
         monkeypatch.setattr(mod, "_store_newest", lambda: TODAY)
         monkeypatch.setattr(mod, "_shadow_inputs", lambda: ([], set()))
         monkeypatch.setattr(mod, "freshness_verdict", _capture)

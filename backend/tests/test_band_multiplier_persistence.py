@@ -108,33 +108,3 @@ _FCAST = {"low": 9.0, "mid": 10.5, "high": 12.0, "direction": "up", "confidence"
 def test_band_multiplier_is_written_and_mirrored():
     rows = _capture_rows(_result(dict(_FCAST)))
     assert rows[0]["band_multiplier"] == pytest.approx(0.5385)
-
-
-# --- backfill of the pre-column window (scripts/backfill_band_multiplier.py) ----------------
-
-
-def test_backfill_reconstructs_the_blend_chain_from_the_run_history():
-    from scripts.backfill_band_multiplier import served_multiplier
-
-    m917 = (1 - W) * 0.5251 + W * 1.0
-    m918 = (1 - W) * 0.5385 + W * ((1 - W) * 0.5251 + W * m917)
-    m920 = (1 - W) * 0.5385 + W * m918
-    assert served_multiplier(date(2026, 9, 17), 3) == pytest.approx(m917, abs=1e-4)
-    assert served_multiplier(date(2026, 9, 18), 3) == pytest.approx(m918, abs=1e-4)
-    assert served_multiplier(date(2026, 9, 20), 3) == pytest.approx(m920, abs=1e-4)
-    assert served_multiplier(date(2026, 9, 25), 3) == pytest.approx(0.5385, abs=1e-4)
-
-
-@pytest.mark.parametrize("h", [7, 14, 30])
-def test_backfill_other_horizons_were_served_unscaled(h):
-    from scripts.backfill_band_multiplier import served_multiplier
-
-    assert served_multiplier(date(2026, 9, 20), h) == 1.0
-
-
-@pytest.mark.parametrize("fd", [date(2026, 9, 16), date(2026, 9, 28)])
-def test_backfill_refuses_dates_outside_the_reconstructed_window(fd):
-    from scripts.backfill_band_multiplier import served_multiplier
-
-    with pytest.raises(ValueError):
-        served_multiplier(fd, 3)

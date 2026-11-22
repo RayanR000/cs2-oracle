@@ -26,9 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from collectors.snapshot_date import resolve_snapshot_date
-from database import ItemForecast, SessionLocal
 from db import ops_store
-from sqlalchemy import func
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -49,18 +47,6 @@ def freshness_verdict(store_newest, expected):
     if store_newest < expected:
         return False, f"the item_forecasts partitions' newest forecast_date is {store_newest}, expected {expected}"
     return True, f"The partitions carry forecasts for {expected} (newest {store_newest})."
-
-
-def postgres_note(db_newest, store_newest):
-    """A ``::notice`` when Postgres is unreadable or behind the partitions, else None. Never a failure."""
-    if db_newest is None:
-        return "::notice title=Postgres::item_forecasts (Postgres) could not be read; the verdict reads the partitions"
-    if store_newest is not None and db_newest < store_newest:
-        return (
-            f"::notice title=Postgres::item_forecasts (Postgres) newest forecast_date is {db_newest}, "
-            f"behind the partitions' {store_newest}; Postgres is read-only and the verdict reads the partitions"
-        )
-    return None
 
 
 def _as_date(value):
@@ -108,19 +94,6 @@ def _shadow_inputs(limit=10):
     return [_as_date(r.d) for r in dates], {(_as_date(r.d), int(r.h), r.c) for r in batches}
 
 
-def _db_newest():
-    """Postgres's newest forecast date, for comparison only; None when it cannot be read."""
-    try:
-        db = SessionLocal()
-        try:
-            return _as_date(db.query(func.max(ItemForecast.forecast_date)).scalar())
-        finally:
-            db.close()
-    except Exception as e:
-        logger.warning(f"item_forecasts (Postgres) could not be read: {e}")
-        return None
-
-
 def _store_newest():
     """The partitions' newest forecast date; None when they hold none (or none exist)."""
     try:
@@ -151,11 +124,7 @@ def main():
     expected = datetime.fromisoformat(args.expected_date).date() if args.expected_date else resolve_snapshot_date()
 
     store_newest = _store_newest()
-    db_newest = _db_newest()
-    logger.info(f"Newest forecast_date: partitions {store_newest}, Postgres {db_newest} (comparison only).")
-    note = postgres_note(db_newest, store_newest)
-    if note:
-        print(note, flush=True)
+    logger.info(f"Newest forecast_date in the partitions: {store_newest}.")
     ok, message = freshness_verdict(store_newest, expected)
     if ok:
         logger.info(message)

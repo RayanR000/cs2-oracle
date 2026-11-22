@@ -296,7 +296,7 @@ def test_main_is_void_when_a_scorer_constant_drifted(monkeypatch, caplog):
 # ------------------------------------------------------------------ load_records (the prod path)
 
 
-def test_load_records_scores_the_partitions_and_never_opens_postgres(monkeypatch):
+def test_load_records_scores_the_partitions(monkeypatch):
     """The real loader, not an injected one: since #122 the scorer takes a `sql -> rows` reader,
     and a loader that still passed a Session raised before reading anything."""
     from database import Base, ForecastOutcome, Item, ItemForecast
@@ -350,10 +350,6 @@ def test_load_records_scores_the_partitions_and_never_opens_postgres(monkeypatch
     session.close()
     engine.dispose()
 
-    def no_postgres(*a, **k):
-        raise AssertionError("load_records opened Postgres")
-
-    monkeypatch.setattr("database.SessionLocal", no_postgres)
     by_horizon = mdr.load_records()
     assert {h: len(v) for h, v in by_horizon.items()} == {3: 1, 7: 2}
     assert all(r["forecast_date"] == day for v in by_horizon.values() for r in v)

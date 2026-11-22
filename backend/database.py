@@ -1,10 +1,10 @@
 """
-Database models for CS2 Market Intelligence Platform
+ORM table classes: the test-only SQL schema. Production state lives in the Parquet partitions
+(`db/ops_store.py`); there is no engine, session factory or migration chain.
 """
 
 from datetime import UTC, datetime
 
-from config import settings
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -18,9 +18,8 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
-    create_engine,
 )
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
 
@@ -28,45 +27,6 @@ Base = declarative_base()
 def utcnow_naive():
     """Return a naive UTC timestamp for compatibility with the current schema."""
     return datetime.now(UTC).replace(tzinfo=None)
-
-
-# Create engine
-# Pool tuning applies to PostgreSQL (production). SQLite (local dev/test)
-# uses a different pool class that rejects pool_size/max_overflow and a
-# driver that rejects the statement_timeout connect arg, so it keeps defaults.
-if settings.database_url.startswith("postgresql"):
-    engine = create_engine(
-        settings.database_url,
-        echo=settings.debug,
-        pool_pre_ping=True,  # Verify connections are alive before using
-        pool_size=5,
-        max_overflow=10,
-        pool_recycle=1800,
-        connect_args={"options": "-c statement_timeout=30000"},
-    )
-else:
-    engine = create_engine(
-        settings.database_url,
-        echo=settings.debug,
-        pool_pre_ping=True,  # Verify connections are alive before using
-    )
-
-# Create session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-def get_db():
-    """Dependency for getting database session"""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-def init_db():
-    """Initialize database - create all tables"""
-    Base.metadata.create_all(bind=engine)
 
 
 class Item(Base):

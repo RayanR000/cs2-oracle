@@ -74,8 +74,5 @@ jobs:
       # workflow's own failure issue. Detection latency is at most one day.
       - name: Verify a forecast landed within the last day
         working-directory: ./backend
-        env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
-          ENVIRONMENT: production
         run: python scripts/check_forecast_freshness.py --expected-date "$(date -u -d yesterday +%F)"
 
