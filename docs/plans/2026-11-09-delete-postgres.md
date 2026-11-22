@@ -109,6 +109,24 @@ frontend rebuild".
 `backtest/scoring.py`; invariant 5's tests now check the `item_forecasts` partition schema; the
 `fastapi`/`uvicorn` dependencies and `config.secret_key` are left for PR 6.
 
+## PR 5b: the backtest off Postgres (found 2026-11-22, not in the spec)
+
+PR 4 left `forecast_prices.py` holding a session for the in-run `backtest_forecasts(db)`, and
+`scripts/backtest_accuracy.py` + `backtest/candidate_resolution.py` still tried every write on
+Postgres first and fell back to the partitions on 25006. Every night since 2026-10-30 took that
+fallback, so this PR makes it the only path: outcomes and candidate outcomes go to the partitions
+with ids from `READ_ONLY_ID_BASE`, accuracy rows to `ops/prediction_accuracy.parquet`, the verdict
+refresh to the mirror and the partitions. The read-twice comparisons, `db/ops_readback.py` and
+`ops_store.compare` are deleted; `DATABASE_URL` leaves the backtest, forecast and model-diagnostics
+CV steps. Gate: one night (the 11-22 resolutions removed from a copy of the 11-22 data snapshot)
+on main with Postgres rejecting writes and on the branch with none: identical rows, ids included,
+in all four outputs; the branch ran 0 SQL statements.
+**Done 2026-11-22** (`changelog/2026-11-22-backtest-off-postgres.md`).
+
+Left for PR 6, beyond its list below: `check_forecast_freshness._db_newest` (a comparison notice,
+the last reason the freshness steps keep `DATABASE_URL`), `measure_conformal_pid.prove_equal` and
+`backfill_band_multiplier.py` (one-offs, both done), and `ops_store.pg_reader` (tests only).
+
 ## PR 6: delete the engine
 
 1. Remove `run_task.py migrate`, `run_migrations`, the "Database Migration" step.

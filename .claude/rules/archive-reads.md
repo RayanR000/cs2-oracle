@@ -43,13 +43,14 @@ paths:
   the point above, not a failed migration.
 - **The forecast record is dual-written to monthly partitions since 2026-10-12** —
   `ops/{item_forecasts,forecast_outcomes,forecast_candidates,forecast_candidate_outcomes}/YYYY-MM.parquet`
-  and `ops/items.parquet`. `db/ops_partitions.py` is their only writer; every DB writer calls it
-  **after** its Postgres commit with rows from `db/ops_readback.py`, so the partitions carry the
-  ids Postgres issued, inside `dual_write`, which logs and never fails a run. Closed months
+  and `ops/items.parquet`. `db/ops_partitions.py` is their only writer. Until Phase 4 every DB
+  writer called it after its Postgres commit with rows read back from Postgres; since Phase 4
+  (`changelog/2026-11-22-backtest-off-postgres.md` for the backtest) the partitions are the only
+  store and new rows take ids from `READ_ONLY_ID_BASE` via `assign_ids`. Closed months
   (calendar end + 43 days) are refused without `allow_closed`. Since Phase 2 PR 1
   (`changelog/2026-10-30-backtest-reads-ops-partitions.md`) the backtest reads them through
   `db/ops_store.py` (views named like the Postgres tables, `pg_deleted` hidden, a table with no
-  files raises) and logs each switched value beside Postgres's (`ops_store.compare`). Since PR 4
+  files raises); the read-twice comparisons against Postgres were deleted in Phase 4. Since PR 4
   (`changelog/2026-10-30-feedback-and-blend-read-ops-partitions.md`) so do the served-coverage
   feedback panel, the prior-day blend and the tier bias fit, and since PR 2
   (`changelog/2026-10-30-candidate-resolution-reads-ops-partitions.md`) candidate resolution,
