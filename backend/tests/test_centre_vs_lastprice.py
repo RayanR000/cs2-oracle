@@ -26,10 +26,21 @@ def cvl():
 
 
 def _write(tmp_path, rows):
-    ops = tmp_path / "ops"
-    ops.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_parquet(ops / "forecast_outcomes.parquet")
+    """The rows as forecast_outcomes monthly partitions, which the gate reads (Phase 4 PR 3)."""
+    from db import ops_partitions
+
+    frame = pd.DataFrame(rows)
+    frame = frame.assign(id=range(1, len(frame) + 1), forecast_id=range(1, len(frame) + 1))
+    ops_partitions.upsert("forecast_outcomes", frame, root=tmp_path / "ops", allow_closed=True)
     return tmp_path
+
+
+def test_the_single_file_mirror_is_never_read(cvl, tmp_path):
+    """Only the partitions count: a single-file mirror beside them is ignored."""
+    _write(tmp_path, [_row()])
+    pd.DataFrame([_row(item_id=2), _row(item_id=3)]).to_parquet(tmp_path / "ops" / "forecast_outcomes.parquet")
+
+    assert len(cvl._load(tmp_path)) == 1
 
 
 def _row(**kw):
