@@ -184,7 +184,7 @@ def run(df, pruned, meta_present, horizon_filter=None, n_jobs=None):
     arms = {"baseline": [], "treatment": meta_all, "placebo": meta_all, "static_only": meta_static}
 
     db = SessionLocal()
-    forecaster = ItemForecaster(db_session=db)
+    forecaster = ItemForecaster(serving_reads=True)
     try:
         horizons = [h for h in ItemForecaster.HORIZONS if horizon_filter is None or h == horizon_filter]
         results = {}

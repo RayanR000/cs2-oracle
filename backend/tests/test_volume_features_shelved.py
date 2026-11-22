@@ -156,9 +156,9 @@ def test_no_volume_feature_survives_the_real_selection_and_prune(tmp_path):
     at all, so there is nothing for the prune to let through here — this test
     now asserts that stronger property.
     """
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
 
     def mock_fetch(*a, **k):
         np.random.seed(42)

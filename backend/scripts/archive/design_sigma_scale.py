@@ -332,7 +332,7 @@ def main() -> int:
     df = load_panel(args.voted or default_voted_panel())
     floor, cap = sigma_bounds_for_panel(df)
     logger.info("sigma clip: floor=%.6f cap=%.6f", floor, cap)
-    fc = ItemForecaster(db_session=None)
+    fc = ItemForecaster()
 
     rows: list[dict] = []
     for h in [int(x) for x in args.horizons.split(",")]:

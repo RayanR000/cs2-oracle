@@ -281,7 +281,7 @@ def voided_dates(voted: pd.DataFrame) -> tuple[frozenset, frozenset]:
     """
     from models.forecaster import ItemForecaster
 
-    forecaster = ItemForecaster(db_session=None, model_dir=tempfile.mkdtemp())
+    forecaster = ItemForecaster(model_dir=tempfile.mkdtemp())
     return (forecaster._snapshot_dates(voted), forecaster._collection_shift_dates(voted))
 
 

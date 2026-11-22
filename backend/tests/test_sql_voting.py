@@ -154,7 +154,6 @@ def test_chunked_archive_read_keeps_source_set_categorical(tmp_path, monkeypatch
     """Each item-hash chunk sees different source sets, so its categories differ.
     Unaligned, pd.concat falls back to `object` -- ~1 GB on the train read."""
     from datetime import UTC, date, datetime, timedelta
-    from unittest.mock import MagicMock
 
     archive = tmp_path / "price-archive"
     archive.mkdir()
@@ -166,7 +165,7 @@ def test_chunked_archive_read_keeps_source_set_categorical(tmp_path, monkeypatch
         day=lambda d: pd.to_datetime(d["day"])
     ).to_parquet(archive / "prices-2026.parquet")
     monkeypatch.setenv("VOTED_CHUNKS", "4")
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path / "m"))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path / "m"))
     f.archive_dir = archive
     f._now = lambda: datetime(2026, 7, 20, tzinfo=UTC)
 

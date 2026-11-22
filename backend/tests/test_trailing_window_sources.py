@@ -29,14 +29,12 @@ There is no point-in-time Steam price in this archive at all.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pandas as pd
 from models.forecaster import ItemForecaster
 
 
 def _f(tmp_path):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
 
 
 def _rows(*specs):

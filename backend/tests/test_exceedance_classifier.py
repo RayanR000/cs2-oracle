@@ -8,15 +8,13 @@ Scope: docs/plans/2026-08-16-exceedance-band-scale-phase2-plan.md.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import numpy as np
 import pandas as pd
 from models.forecaster import ItemForecaster
 
 
 def _forecaster(tmp_path):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
 
 
 def _xy(seed=0):

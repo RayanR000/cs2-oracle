@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import copy
 from datetime import date, timedelta
-from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -45,7 +44,7 @@ def _disable_ml_heads(monkeypatch):
 
 @pytest.fixture
 def forecaster(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 def _row(out, item, day):
@@ -190,7 +189,7 @@ def _tier(price: float) -> int:
 
 
 def _cv_forecaster(tmp_path):
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.QUANTILES = [0.5]
     f.feature_cols = ["feat_a"]
     f.CV_MIN_TRAIN_DAYS = 40

@@ -268,7 +268,7 @@ def _build_frame_uncached():
     db = SessionLocal()
 
     try:
-        forecaster = ItemForecaster(db_session=db)
+        forecaster = ItemForecaster(serving_reads=True)
         events_df = forecaster.fetch_events()
         db.close()
 
@@ -474,7 +474,7 @@ def run_evaluation(df, pruned, horizon_filter=None, n_jobs=None, row_budget=None
     eval_set = set(eval_items)
 
     db = SessionLocal()
-    forecaster = ItemForecaster(db_session=db)
+    forecaster = ItemForecaster(serving_reads=True)
     try:
         horizons = ItemForecaster.HORIZONS
         if horizon_filter is not None:

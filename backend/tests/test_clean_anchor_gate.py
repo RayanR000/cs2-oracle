@@ -28,7 +28,7 @@ Two things this is NOT:
 from __future__ import annotations
 
 from datetime import date, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import lightgbm as lgb
 import numpy as np
@@ -308,7 +308,7 @@ def _price_frame():
 def forecaster_with_models(tmp_path):
     """A forecaster whose `predict` returns rows: real boosters over two
     features, which is all the anchor disclosure needs to travel through."""
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.HORIZONS = [7]
     f.QUANTILES = [0.5]
     cols = ["price_log", "price_lag_1d"]

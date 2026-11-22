@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -34,7 +33,7 @@ N_OBS = 200
 
 @pytest.fixture
 def fc(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 def _frame() -> pd.DataFrame:

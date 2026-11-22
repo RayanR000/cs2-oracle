@@ -176,7 +176,7 @@ def build_frame(cache_path=None):
             return df, meta["features"]
     db = SessionLocal()
     try:
-        forecaster = ItemForecaster(db_session=db)
+        forecaster = ItemForecaster(serving_reads=True)
         events_df = forecaster.fetch_events()
         voted = load_2025_voted()
         all_prices = voted.rename(columns={"date": "timestamp"})
@@ -328,7 +328,7 @@ def run(df, features, horizon_filter=None, max_folds=None, n_jobs=None):
     set_eval, set_train, set_trained = (set(eval_items), set(train_items), set(trained_eval))
 
     db = SessionLocal()
-    forecaster = ItemForecaster(db_session=db)
+    forecaster = ItemForecaster(serving_reads=True)
     try:
         horizons = [h for h in ItemForecaster.HORIZONS if horizon_filter is None or h == horizon_filter]
         results = {}

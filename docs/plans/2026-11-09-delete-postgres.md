@@ -92,6 +92,11 @@ Delete `scripts/ops_parity.py`, `ops_sync_from_postgres.py`, `ops-sync.yml`, the
    rows to main for the same input, every column except `id` and `created_at`.
 6. `replay_serving.py` and the model-diagnostics steps move to `ops_store` readers; drop their
    `DATABASE_URL`.
+   **Done 2026-11-22.** Departures: the session's None-ness was also the blend/feedback switch, so
+   it became `serving_reads` (callers mapped one-for-one); alerts are dropped, not moved (user's
+   call); `forecast_prices.py` keeps a session for the in-run backtest, and the model-diagnostics
+   CV step keeps `DATABASE_URL` because it runs `forecast_prices`. Gate passed: identical
+   `predict()` output. See `changelog/2026-11-22-forecaster-holds-no-session.md`.
 
 ## PR 5: retire the API
 

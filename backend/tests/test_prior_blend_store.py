@@ -5,13 +5,12 @@ in the partitions (ids from READ_ONLY_ID_BASE), so a Postgres read would blend a
 """
 
 import datetime as dt
-import logging
 
 import numpy as np
 import pandas as pd
 import pytest
-from database import Base, Item, ItemForecast
-from db import ops_partitions, ops_store
+from database import Base, Item
+from db import ops_partitions
 from models.forecaster import ItemForecaster
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -38,7 +37,7 @@ def session():
 def forecaster(session):
     mirror_session_to_ops(session, tables=("items",))  # the slug map's catalog (Phase 2 PR 5)
     f = ItemForecaster.__new__(ItemForecaster)
-    f.db = session
+    f.serving_reads = True
     f._now = lambda: ANCHOR
     return f
 
@@ -103,15 +102,3 @@ def test_missing_store_skips_the_blend_loudly(forecaster, capsys):
 
     assert not out["mask"].any()
     assert "::error title=Prior-day blend::" in capsys.readouterr().out
-
-
-def test_read_twice_counts_rows_and_sums_price_mid(forecaster, session, caplog):
-    for r in (_row(1, 1, dt.date(2026, 9, 24)), _row(2, 2, dt.date(2026, 9, 23), mid=9.0)):
-        session.add(ItemForecast(**r))
-    session.commit()
-    mirror_session_to_ops(session)
-
-    with caplog.at_level(logging.INFO, logger=ops_store.logger.name):
-        forecaster._fetch_prior_forecasts(np.array(["a", "b"]), 3)
-
-    assert "read twice prior-day forecasts h=3: 2 keys, 0 differ" in caplog.text

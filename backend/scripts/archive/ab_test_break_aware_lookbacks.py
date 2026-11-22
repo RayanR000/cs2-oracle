@@ -111,7 +111,7 @@ def build_frames(cache_dir: Path):
             os.environ.pop("BREAK_AWARE_LOOKBACKS", None)
         db = SessionLocal()
         try:
-            fc = ItemForecaster(db_session=db)
+            fc = ItemForecaster(serving_reads=True)
             t0 = time.time()
             df = fc.build_training_data(
                 days_back=1460,
@@ -188,7 +188,7 @@ def run(frames, feature_cols, horizon, mode, n_jobs):
 
     db = SessionLocal()
     try:
-        fc = ItemForecaster(db_session=db)
+        fc = ItemForecaster(serving_reads=True)
         tcol = f"target_return_{horizon}d"
         subs = {}
         for arm in {a for a, _ in legs}:

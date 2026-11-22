@@ -22,7 +22,6 @@ without it -- the two arms are scored against different targets. The referee is
 from __future__ import annotations
 
 from datetime import date, timedelta
-from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -33,7 +32,7 @@ from models.forecaster import ItemForecaster
 
 @pytest.fixture
 def forecaster(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 @pytest.fixture

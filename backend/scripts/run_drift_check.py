@@ -36,12 +36,10 @@ def main():
     parser.add_argument("--ref-path", default=DEFAULT_REF_PATH)
     args = parser.parse_args()
 
-    from unittest.mock import MagicMock
-
     from models.forecaster import ItemForecaster
 
     logger.info("Building current feature frame...")
-    forecaster = ItemForecaster(db_session=MagicMock())
+    forecaster = ItemForecaster(serving_reads=True)
     df = forecaster.build_training_data(
         days_back=90,
         backfilled_only=True,

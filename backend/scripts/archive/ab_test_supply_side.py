@@ -105,7 +105,7 @@ def _build_frame_uncached(max_items):
     con = duckdb.connect()
     db = SessionLocal()
     try:
-        forecaster = ItemForecaster(db_session=db)
+        forecaster = ItemForecaster(serving_reads=True)
         events_df = forecaster.fetch_events()
         db.close()
 
@@ -250,7 +250,7 @@ def run_evaluation(df, base_cols, rarity_cols, arm, horizon_filter=None):
     )
 
     try:
-        forecaster = ItemForecaster(db_session=None)
+        forecaster = ItemForecaster()
 
         results_by_horizon = {}
         horizons = ItemForecaster.HORIZONS if horizon_filter is None else [horizon_filter]

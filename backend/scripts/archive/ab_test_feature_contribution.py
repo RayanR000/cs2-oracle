@@ -79,7 +79,7 @@ def run_evaluation(max_items=200, horizon_filter=None):
     db = SessionLocal()
 
     try:
-        forecaster = ItemForecaster(db_session=db)
+        forecaster = ItemForecaster(serving_reads=True)
         events_df = forecaster.fetch_events()
         db.close()
 

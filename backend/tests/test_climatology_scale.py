@@ -9,8 +9,6 @@ artifact round-trip so the served band matches the calibrated one.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -19,7 +17,7 @@ from models.forecaster import ItemForecaster
 
 @pytest.fixture
 def fc(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 def _frame(tcol="target_return_7d"):

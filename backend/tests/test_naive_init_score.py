@@ -21,7 +21,6 @@ Two failure modes are worth more than the rest, and both have a test here:
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -166,7 +165,7 @@ def test_the_flag_round_trips_through_meta_json(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("NAIVE_INIT_SCORE", "1")
     monkeypatch.delenv("BYMYKEL_METADATA", raising=False)
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.feature_cols = ["return_1d"]
     f.feature_medians = pd.Series({"return_1d": 0.0})
     f.conformal_calibration = {h: 1.0 for h in f.HORIZONS}
@@ -176,7 +175,7 @@ def test_the_flag_round_trips_through_meta_json(tmp_path, monkeypatch):
     assert meta["naive_init_score"] is True
 
     monkeypatch.delenv("NAIVE_INIT_SCORE", raising=False)
-    g = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    g = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     g.load_models()
     assert g._artifact_naive_init is True
     assert g._naive_init_score_served() is True
@@ -187,7 +186,7 @@ def test_an_artifact_written_before_the_flag_existed_loads(tmp_path, monkeypatch
     """Absence must read as None ("does not say"), not as False."""
     monkeypatch.delenv("NAIVE_INIT_SCORE", raising=False)
     monkeypatch.delenv("BYMYKEL_METADATA", raising=False)
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.feature_cols = ["return_1d"]
     f.feature_medians = pd.Series({"return_1d": 0.0})
     f.conformal_calibration = {h: 1.0 for h in f.HORIZONS}
@@ -197,7 +196,7 @@ def test_an_artifact_written_before_the_flag_existed_loads(tmp_path, monkeypatch
     del meta["naive_init_score"]
     (tmp_path / "meta.json").write_text(json.dumps(meta))
 
-    g = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    g = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     g.load_models()
     assert g._artifact_naive_init is None
 
@@ -262,7 +261,7 @@ def _cv_frame(n_items=30, n_dates=90, horizon=3, seed=3):
 
 
 def _cv_forecaster(tmp_path):
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.QUANTILES = [0.5]
     # `return_1d` stays OUT of the feature set here: it is the offset column, and
     # a booster able to split on it would order items by itself and make the
@@ -332,7 +331,7 @@ def test_a_real_train_runs_with_the_instrument_on(tmp_path, monkeypatch, skip_re
     """
     monkeypatch.setenv("NAIVE_INIT_SCORE", "1")
     monkeypatch.setenv("CV_DIAGNOSTIC_CLASSIFIER", "0")
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.N_ENSEMBLES = 1
     f.SKIP_HP_HORIZONS = list(f.HORIZONS)
     f.CV_MIN_TRAIN_DAYS = 40

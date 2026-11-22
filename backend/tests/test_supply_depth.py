@@ -384,7 +384,6 @@ def test_reader_ignores_the_supply_history_sidecar(tmp_path):
     with the depth column list, raising `No match for FieldRef.Name(item_slug)`
     and discarding every real supply row with it.
     """
-    from unittest.mock import MagicMock
 
     from models.forecaster import ItemForecaster
 
@@ -401,7 +400,7 @@ def test_reader_ignores_the_supply_history_sidecar(tmp_path):
         }
     ).to_parquet(tmp_path / "supply-history.parquet", index=False)
 
-    f = ItemForecaster(db_session=MagicMock())
+    f = ItemForecaster(serving_reads=True)
     f.archive_dir = tmp_path
     depth = f._fetch_supply_snapshots()
 

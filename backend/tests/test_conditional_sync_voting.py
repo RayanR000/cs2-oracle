@@ -31,15 +31,13 @@ are present -- exactly the item-days where the measurement above says it hurts.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pandas as pd
 from models.forecaster import ItemForecaster
 from models.item_parser import CONDITIONAL_STEAM_SOURCES, MIN_ASKS_TO_DROP_SYNC
 
 
 def _f(tmp_path):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
 
 
 def _rows(*specs):

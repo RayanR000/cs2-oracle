@@ -258,7 +258,7 @@ def _build_frame_uncached(horizons):
     db = SessionLocal()
 
     try:
-        forecaster = ItemForecaster(db_session=db)
+        forecaster = ItemForecaster(serving_reads=True)
         events_df = forecaster.fetch_events()
         db.close()
 
@@ -453,7 +453,7 @@ def run(df, pruned, horizon, n_jobs):
     prod_a, prod_b = assign_prod_draws(df, eval_set, full_items)
 
     db = SessionLocal()
-    forecaster = ItemForecaster(db_session=db)
+    forecaster = ItemForecaster(serving_reads=True)
     try:
         # prepare_targets carries the 2026-08-08 frozen-price-run rule, so this
         # re-derivation runs on the post-step-6 label set. The stored +3.50pp

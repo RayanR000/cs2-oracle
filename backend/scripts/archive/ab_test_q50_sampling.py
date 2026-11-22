@@ -396,7 +396,7 @@ def summarize(records):
 
 def run(max_items, horizon_filter, max_folds, fold_start=0, fold_count=None, feature_cache=None):
     db = SessionLocal()
-    forecaster = ItemForecaster(db_session=db)
+    forecaster = ItemForecaster(serving_reads=True)
     events_df = forecaster.fetch_events()
     db.close()
 

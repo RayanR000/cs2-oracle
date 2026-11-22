@@ -21,11 +21,10 @@ from models.forecaster import ItemForecaster
 
 
 class _Row:
-    """Stand-in for a prediction_accuracy result row."""
+    """One prediction_accuracy row's metrics; written to the Parquet the drift check reads."""
 
-    def __init__(self, metrics, evaluation_date="2026-08-01"):
+    def __init__(self, metrics):
         self.metrics = metrics
-        self.evaluation_date = evaluation_date
 
 
 def _metrics(da, *, covered=True, include_flag=True):
@@ -36,10 +35,29 @@ def _metrics(da, *, covered=True, include_flag=True):
     return m
 
 
+def _write_accuracy(rows, horizon=7):
+    """``ops/prediction_accuracy.parquet`` (the hermetic OPS_DIR) with one row per day, newest first."""
+    import json
+
+    from db import parquet
+
+    today = datetime.now(UTC).date()
+    pd.DataFrame(
+        [
+            {
+                "prediction_type": "forecast",
+                "horizon_days": horizon,
+                "evaluation_date": pd.Timestamp(today - timedelta(days=i)),
+                "metrics": json.dumps(r.metrics),
+            }
+            for i, r in enumerate(rows)
+        ]
+    ).to_parquet(parquet.ensure_ops_dir() / "prediction_accuracy.parquet")
+
+
 def _forecaster(rows, tmp_path):
-    db = MagicMock()
-    db.execute.return_value.fetchall.return_value = rows
-    return ItemForecaster(db_session=db, model_dir=str(tmp_path))
+    _write_accuracy(rows)
+    return ItemForecaster(model_dir=str(tmp_path))
 
 
 def test_threshold_is_a_named_constant():
@@ -92,13 +110,23 @@ def test_too_few_covered_rows_returns_none(tmp_path):
     assert _forecaster(rows, tmp_path).check_concept_drift(horizon=7) is None
 
 
-def test_drift_alert_is_still_written(tmp_path):
-    # Alerting is worth keeping even though it no longer triggers a retrain.
+def test_drift_is_still_reported(tmp_path, capsys):
+    # Alerting is worth keeping even though it no longer triggers a retrain. Since Phase 4 PR 4
+    # it is an annotation on the run, not an accuracy_alerts row.
     rows = [_Row(_metrics(28.0, covered=True)) for _ in range(7)]
-    f = _forecaster(rows, tmp_path)
-    f.check_concept_drift(horizon=7)
-    assert f.db.add.called
-    assert f.db.commit.called
+    _forecaster(rows, tmp_path).check_concept_drift(horizon=7)
+    assert "::warning title=Concept drift 7d::" in capsys.readouterr().out
+
+
+def test_rows_older_than_the_window_are_not_read(tmp_path):
+    rows = [_Row(_metrics(28.0, covered=True)) for _ in range(20)]
+    _write_accuracy(rows)
+    # sliding_window=2 -> 4-day cutoff and a 2-row limit: only the newest two survive.
+    assert ItemForecaster(model_dir=str(tmp_path)).check_concept_drift(horizon=7, sliding_window=2) is None
+
+
+def test_no_prediction_accuracy_file_means_we_cannot_tell(tmp_path):
+    assert ItemForecaster(model_dir=str(tmp_path)).check_concept_drift(horizon=7) is None
 
 
 # ---------------------------------------------------------------------------

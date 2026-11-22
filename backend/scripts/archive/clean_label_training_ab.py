@@ -88,7 +88,7 @@ def run(df, horizon_filter=None, max_folds=None):
     eval_items, train_items, trained_eval = assign_items(df)
 
     db = SessionLocal()
-    forecaster = ItemForecaster(db_session=db)
+    forecaster = ItemForecaster(serving_reads=True)
     try:
         horizons = [h for h in ItemForecaster.HORIZONS if horizon_filter is None or h == horizon_filter]
         results = {}

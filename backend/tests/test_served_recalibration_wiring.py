@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import inspect
 import json
-from unittest.mock import MagicMock
 
 import models.served_recalibration as sr
 import numpy as np
@@ -26,7 +25,7 @@ from tests._source import method_closure_source
 
 
 def _f(tmp_path):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
 
 
 def test_fresh_forecaster_has_an_empty_factor_map(tmp_path):
@@ -92,15 +91,17 @@ def test_training_computes_and_stores_the_factor(_stub=None):
 
 def test_feedback_is_dormant_when_the_cutover_is_unset(_stub=None):
     """With no cutover (since=None), served_coverage_factors returns {} without ever reading the
-    panel — the whole store would be pre-signed-band geometry. A session whose every attribute
-    access raises proves the panel is not touched. (The shipped default is now a real date; the
-    dormancy is a property of since=None, exercised here explicitly.)"""
+    panel — the whole store would be pre-signed-band geometry. A panel loader that raises proves
+    the panel is not touched. (The shipped default is now a real date; the dormancy is a property
+    of since=None, exercised here explicitly.)"""
+    import pytest
 
-    class _Exploding:
-        def __getattr__(self, name):
-            raise AssertionError(f"panel was read ({name}) while feedback should be dormant")
+    def _exploding(*a, **kw):
+        raise AssertionError("panel was read while feedback should be dormant")
 
-    assert served_coverage_factors(_Exploding(), [3, 7, 14, 30], since=None) == {}
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(sr, "_load_panel", _exploding)
+        assert served_coverage_factors([3, 7, 14, 30], since=None) == {}
 
 
 def test_shipped_cutover_is_a_parseable_date(_stub=None):
@@ -144,14 +145,14 @@ def test_default_since_floors_the_panel_to_the_latest_cutover(monkeypatch):
 
     seen = {}
 
-    def _capture(session, horizons, *, since=None):
+    def _capture(read, horizons, *, since=None):
         seen["since"] = since
         import pandas as pd
 
         return pd.DataFrame(columns=list(sr.PANEL_COLUMNS))
 
     monkeypatch.setattr(sr, "_load_panel", _capture)
-    served_coverage_factors(object(), [3, 7, 14, 30])
+    served_coverage_factors([3, 7, 14, 30])
     assert seen["since"] == "2026-09-15"
 
 
@@ -202,7 +203,7 @@ def test_shrink_k_cutover_is_armed_to_the_first_k320_serve():
 def _recording_factors(returns):
     calls = []
 
-    def _fake(session, horizons, **kw):
+    def _fake(horizons, **kw):
         hs = list(horizons)
         calls.append(hs)
         return {h: v for h, v in returns.items() if h in hs}
@@ -226,7 +227,7 @@ def test_live_refresh_never_overrides_a_baked_factor(tmp_path, monkeypatch):
     f = _f(tmp_path)
     f.served_coverage_factor = {3: 0.5385}
 
-    def _returns_everything(session, horizons, **kw):
+    def _returns_everything(horizons, **kw):
         return {3: 1.9, 7: 0.6, 14: 0.7, 30: 0.8}  # misbehaving estimator: ignores `horizons`
 
     monkeypatch.setattr(sr, "served_coverage_factors", _returns_everything)
@@ -255,8 +256,8 @@ def test_live_refresh_on_an_empty_artifact_requests_every_horizon(tmp_path, monk
     assert f.served_coverage_factor == {3: 0.54}
 
 
-def test_live_refresh_without_a_session_reads_nothing(tmp_path, monkeypatch):
-    f = ItemForecaster(db_session=None, model_dir=str(tmp_path))
+def test_live_refresh_without_serving_reads_reads_nothing(tmp_path, monkeypatch):
+    f = ItemForecaster(model_dir=str(tmp_path))
 
     def _boom(*a, **kw):
         raise AssertionError("panel read without a DB session")

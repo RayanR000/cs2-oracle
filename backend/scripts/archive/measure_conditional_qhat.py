@@ -501,7 +501,7 @@ def main() -> int:
         "sigma clip: floor=%.6f cap=%.6f (this panel's own, not the artifact's -- read ratios, not levels)", floor, cap
     )
     state = state_variables(df, floor, cap)
-    fc = ItemForecaster(db_session=None)
+    fc = ItemForecaster()
 
     schemes: dict[str, Scheme] = {
         "S0_pooled": s0_pooled,

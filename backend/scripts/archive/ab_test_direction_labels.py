@@ -251,7 +251,7 @@ def run(max_items, horizon_filter, purge_days_arg):
     con = duckdb.connect()
     db = SessionLocal()
     try:
-        forecaster = ItemForecaster(db_session=db)
+        forecaster = ItemForecaster(serving_reads=True)
         events_df = forecaster.fetch_events()
         db.close()
         df, feat_cols = load_features(con, forecaster, events_df, max_items)

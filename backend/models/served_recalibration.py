@@ -293,7 +293,6 @@ def _load_panel(read, horizons: Iterable[int], *, since: str | None = None) -> p
 
 
 def served_coverage_factors(
-    session,
     horizons: Iterable[int],
     *,
     min_dates: int = MIN_FEEDBACK_DATES,
@@ -313,8 +312,6 @@ def served_coverage_factors(
     """
     if since is _UNSET:
         since = _geometry_floor()
-    if session is None:
-        return {}
     if since is None:
         logger.info(
             "  served-coverage: no band-geometry cutover set (SIGNED_BAND_SERVING_START and "
@@ -337,20 +334,4 @@ def served_coverage_factors(
         )
         return {}
 
-    def pg_factors() -> dict[int, float]:
-        # Silenced: the Postgres side must not repeat the factor and clamp lines in the run's log.
-        level = logger.level
-        logger.setLevel(logging.ERROR)
-        try:
-            return factors(ops_store.pg_reader(session))
-        finally:
-            logger.setLevel(level)
-
-    ops_store.compare(
-        "served-coverage factor per horizon",
-        pg_factors,
-        out,
-        tol=1e-9,
-        db=session,
-    )
     return out

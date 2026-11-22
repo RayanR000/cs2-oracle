@@ -11,15 +11,13 @@ Hence the flag and this test.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import numpy as np
 import pandas as pd
 from models.forecaster import ItemForecaster
 
 
 def _f(tmp_path):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
 
 
 def test_flag_defaults_on():

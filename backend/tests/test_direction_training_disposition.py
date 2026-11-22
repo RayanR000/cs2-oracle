@@ -32,17 +32,16 @@ def test_predict_never_consults_direction():
 
 def test_legacy_artifact_loads_direction_free(tmp_path):
     """A legacy directory containing clf_7d.txt loads with no direction state."""
-    from unittest.mock import MagicMock
 
     import pandas as pd
 
-    f = fc_module.ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = fc_module.ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.feature_cols = ["a"]
     f.feature_medians = pd.Series({"a": 0.0})
     f.conformal_calibration = {}
     f.save_models()
     (tmp_path / "clf_7d.txt").write_text("legacy direction booster (not a real model)")
-    g = fc_module.ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    g = fc_module.ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     g.load_models()
     assert g.direction_models == {}
 

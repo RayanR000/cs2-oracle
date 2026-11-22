@@ -160,7 +160,7 @@ def _build_frame_uncached(max_items):
     db = SessionLocal()
 
     try:
-        forecaster = ItemForecaster(db_session=db)
+        forecaster = ItemForecaster(serving_reads=True)
         events_df = forecaster.fetch_events()
         db.close()
 
@@ -268,7 +268,7 @@ def run_evaluation(df, pruned, present_new, horizon_filter=None, arm_filter=None
         n_jobs = max(1, (os.cpu_count() or 4) // 2)
     quantiles = [0.5] if q50_only else [0.1, 0.5, 0.9]
     db = SessionLocal()
-    forecaster = ItemForecaster(db_session=db)
+    forecaster = ItemForecaster(serving_reads=True)
 
     try:
         # Three arms. baseline/treatment differ only by the 6 new columns.

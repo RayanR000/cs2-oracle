@@ -188,7 +188,7 @@ def run_ab_test(max_items=500, horizons=None, skip_db=False):
 
     try:
         db = SessionLocal()
-        forecaster = ItemForecaster(db_session=db)
+        forecaster = ItemForecaster(serving_reads=True)
         events_df = forecaster.fetch_events()
         db.close()
 

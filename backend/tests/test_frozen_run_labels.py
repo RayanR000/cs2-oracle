@@ -19,7 +19,6 @@ non-zero return. See `docs/specs/2026-08-08-frozen-price-runs-design.md`.
 from __future__ import annotations
 
 from datetime import date, timedelta
-from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -31,7 +30,7 @@ from models.staleness import STALE_RUN_GAP_BREAK_DAYS
 
 @pytest.fixture
 def forecaster(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 def _panel(n_items=40, n_days=40, start=date(2026, 1, 1), seed=7):
@@ -139,7 +138,7 @@ def test_a_gap_wider_than_the_break_breaks_the_run_rather_than_voiding(forecaste
     rows.append({"item_id": "i0", "date": resumed, "price": 15.0})
     rows.append({"item_id": "i0", "date": resumed + timedelta(days=horizon), "price": 20.0})
     out = ItemForecaster.prepare_targets(
-        ItemForecaster(db_session=MagicMock(), model_dir="/tmp/x"), pd.DataFrame(rows), horizon=horizon
+        ItemForecaster(serving_reads=True, model_dir="/tmp/x"), pd.DataFrame(rows), horizon=horizon
     )
 
     # `resumed` repeats 15.0 but is 8 days after it, so it is a fresh level.

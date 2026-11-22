@@ -149,47 +149,7 @@ def test_missing_store_returns_no_factor_and_names_the_store(session, caplog):
     _seed(session)  # Postgres has the rows; the partitions are empty
 
     with caplog.at_level(logging.WARNING, logger=sr.logger.name):
-        assert sr.served_coverage_factors(session, [7], min_dates=1, since=SINCE) == {}
+        assert sr.served_coverage_factors([7], min_dates=1, since=SINCE) == {}
 
     assert "ops partitions" in caplog.text
     assert "MissingTable" in caplog.text
-
-
-def test_factors_survive_a_failing_postgres_read(session, monkeypatch):
-    _seed(session)
-    mirror_session_to_ops(session)
-    working = sr.served_coverage_factors(session, [7], min_dates=1, since=SINCE)
-    assert 7 in working
-
-    def dead(_session):
-        def read(sql):
-            raise RuntimeError("cannot execute SELECT in a read-only transaction")
-
-        return read
-
-    monkeypatch.setattr(ops_store, "pg_reader", dead)
-    rollbacks = []
-    monkeypatch.setattr(session, "rollback", lambda: rollbacks.append(1))
-
-    assert sr.served_coverage_factors(session, [7], min_dates=1, since=SINCE) == working
-    assert rollbacks
-
-
-def test_read_twice_logs_factor_per_horizon(session, caplog):
-    _seed(session)
-    mirror_session_to_ops(session)
-
-    with caplog.at_level(logging.INFO, logger=ops_store.logger.name):
-        sr.served_coverage_factors(session, [7], min_dates=1, since=SINCE)
-
-    assert "read twice served-coverage factor per horizon: 1 keys, 0 differ" in caplog.text
-
-
-def test_postgres_side_does_not_repeat_the_factor_log(session, caplog):
-    _seed(session)
-    mirror_session_to_ops(session)
-
-    with caplog.at_level(logging.INFO, logger=sr.logger.name):
-        sr.served_coverage_factors(session, [7], min_dates=1, since=SINCE)
-
-    assert caplog.text.count("7d served-coverage factor") == 1

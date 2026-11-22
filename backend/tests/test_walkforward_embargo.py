@@ -39,7 +39,6 @@ from __future__ import annotations
 import inspect
 import re
 from datetime import timedelta
-from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -101,7 +100,7 @@ HORIZONS = [3, 7, 14, 30]
 @pytest.fixture
 def forecaster(tmp_path_factory):
     return ItemForecaster(
-        db_session=MagicMock(),
+        serving_reads=True,
         model_dir=str(tmp_path_factory.mktemp("saved_models")),
     )
 

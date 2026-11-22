@@ -17,8 +17,6 @@ serving rule.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import numpy as np
 import pandas as pd
 from models.forecaster import ItemForecaster
@@ -29,7 +27,7 @@ def _mk(monkeypatch, env=None):
         monkeypatch.delenv("FEATURE_NATIVE_NAN", raising=False)
     else:
         monkeypatch.setenv("FEATURE_NATIVE_NAN", env)
-    return ItemForecaster(db_session=MagicMock())
+    return ItemForecaster(serving_reads=True)
 
 
 def test_flag_defaults_off(monkeypatch):
@@ -67,7 +65,7 @@ def test_serving_follows_artifact_not_env(monkeypatch):
     """A model trained with the flag ON must keep passing NaN through even if the
     serving process has the env var unset (and vice versa)."""
     monkeypatch.delenv("FEATURE_NATIVE_NAN", raising=False)
-    f = ItemForecaster(db_session=MagicMock())
+    f = ItemForecaster(serving_reads=True)
     # artifact says it was trained native-nan; env says off
     f._artifact_feature_native_nan = True
     assert f._feature_native_nan_served() is True
@@ -79,7 +77,7 @@ def test_serving_follows_artifact_not_env(monkeypatch):
 
 def test_serving_falls_back_to_env_when_artifact_silent(monkeypatch):
     """An older artifact with no flag stored falls back to the environment."""
-    f = ItemForecaster(db_session=MagicMock())
+    f = ItemForecaster(serving_reads=True)
     f._artifact_feature_native_nan = None
     monkeypatch.setenv("FEATURE_NATIVE_NAN", "1")
     assert f._feature_native_nan_served() is True
@@ -91,7 +89,7 @@ def test_served_helper_uses_artifact_when_served_true(monkeypatch):
     """_impute_features(served=True) reads the artifact flag; served=False reads
     the environment."""
     monkeypatch.delenv("FEATURE_NATIVE_NAN", raising=False)
-    f = ItemForecaster(db_session=MagicMock())
+    f = ItemForecaster(serving_reads=True)
     f._artifact_feature_native_nan = True
     X = pd.DataFrame({"return_180d": [np.nan]})
     medians = pd.Series({"return_180d": 6.3})

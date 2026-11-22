@@ -10,7 +10,6 @@ docs/specs/2026-09-30-composition-break-calendar-design.md.
 import json
 import logging
 from datetime import date, timedelta
-from unittest.mock import MagicMock
 
 import pandas as pd
 from models.forecaster import ItemForecaster
@@ -107,7 +106,7 @@ def _priced(n_items: int, days: int, switch_day: int | None) -> pd.DataFrame:
 
 
 def _fc(tmp_path):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
 
 
 def _saveable(f):

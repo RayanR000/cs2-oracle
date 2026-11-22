@@ -13,7 +13,6 @@ import inspect
 import json
 import re
 from datetime import date
-from unittest.mock import MagicMock
 
 import pytest
 from backtest.scoring import MIN_HEADLINE_DATES
@@ -98,7 +97,7 @@ def _load(model_dir):
     # requires a full meta.json + model files, which these tests don't
     # provide, so exercise the bias-corrections load directly -- this is the
     # same call load_models() makes internally.
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(model_dir))
+    f = ItemForecaster(serving_reads=True, model_dir=str(model_dir))
     f._load_bias_corrections()
     return f
 

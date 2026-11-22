@@ -14,14 +14,13 @@ real crash.
 from __future__ import annotations
 
 from datetime import timedelta
-from unittest.mock import MagicMock
 
 import pandas as pd
 from models.forecaster import ItemForecaster
 
 
 def _f(tmp_path):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
 
 
 def _frame_with_a_cutover(n_items=60, n_dates=40, cutover_at=20):

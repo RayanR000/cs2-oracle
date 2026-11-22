@@ -228,7 +228,7 @@ def _cv_frame(n_items=8, n_dates=80, horizon=3, seed=11):
 
 
 def _cv_forecaster(tmp_path, quantiles):
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.QUANTILES = quantiles
     f.feature_cols = ["feat_a", "feat_b"]
     # Shrink the expanding window so a synthetic frame yields >= 2 folds.
@@ -477,13 +477,13 @@ def test_save_then_load_round_trips_the_conformal_centre(tmp_path):
     field — and reading a coverage number without it is what let an 80%-labelled
     band serve 34.6-61.8%.
     """
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.feature_cols = ["feat_a", "feat_b"]
     f.conformal_calibration = {3: 1.1, 7: 2.2}
     f.conformal_centre = {3: "served", 7: "q50"}
     f.save_models()
 
-    g = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    g = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     g.load_models()
     assert g.conformal_centre == {3: "served", 7: "q50"}
     assert all(isinstance(h, int) for h in g.conformal_centre)
@@ -508,7 +508,7 @@ def test_load_models_tolerates_an_artifact_with_no_conformal_centre(tmp_path):
             }
         )
     )
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.load_models()
     assert f.conformal_centre == {}
 
@@ -558,7 +558,7 @@ def _fast_forecaster(tmp_path, warm=False):
     `warm=True` seeds cached HP for every horizon/quantile, which is what makes
     reuse_hp — and therefore a warm retrain — true.
     """
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.N_ENSEMBLES = 1
     f.SKIP_HP_HORIZONS = list(f.HORIZONS)  # no Optuna
     f.CV_MIN_TRAIN_DAYS = 40
@@ -741,7 +741,7 @@ def test_engineered_cache_write_is_suppressible(tmp_path, monkeypatch):
     every run writes one nothing will ever read. Nothing reads it back in
     process either — predict() only consults it before engineering.
     """
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     df = pd.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]})
     path = Path(f._engineered_cache_path)
 
@@ -1046,7 +1046,7 @@ def test_load_models_raises_before_reading_any_other_field(tmp_path):
             }
         )
     )
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     with pytest.raises(IncompatibleModelArtifact, match="artifact version"):
         f.load_models()
 
@@ -1068,7 +1068,7 @@ def test_load_models_raises_on_missing_sigma_clip_even_at_current_version(tmp_pa
             }
         )
     )
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     with pytest.raises(KeyError, match="sigma_clip"):
         f.load_models()
 
@@ -1086,7 +1086,7 @@ def test_load_models_raises_on_missing_conformal_calibration_even_at_current_ver
             }
         )
     )
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     with pytest.raises(KeyError, match="conformal_calibration"):
         f.load_models()
 
@@ -1097,13 +1097,13 @@ def test_save_then_load_round_trips_conformal_and_sigma_clip(tmp_path):
     what load_models restores, with no coercion drift (e.g. int horizon keys
     staying int, not becoming str or float on the way back).
     """
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.feature_cols = ["feat_a", "feat_b"]
     f.conformal_calibration = {3: 1.1, 7: 2.2, 14: 3.3, 30: 4.4}
     f.sigma_clip = {"floor": 0.023, "cap": 0.91, "fallback": 0.156}
     f.save_models()
 
-    g = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    g = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     g.load_models()
 
     assert g.conformal_calibration == f.conformal_calibration
@@ -1137,13 +1137,13 @@ def test_single_member_ensemble_round_trips_through_disk(tmp_path):
     so a predict-only run served nothing. Train-only runs could not catch it:
     the boosters are still in memory there.
     """
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.feature_cols = ["feat_a", "feat_b"]
     f.conformal_calibration = {3: 1.0}
     f.models[(3, 0.5)] = [_tiny_booster()]
     f.save_models()
 
-    g = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    g = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     g.load_models()
 
     assert (3, 0.5) in g.models, f"models empty after load; on disk: {sorted(p.name for p in tmp_path.glob('*.txt'))}"
@@ -1159,7 +1159,7 @@ def test_load_ignores_stale_extra_ensemble_members_on_disk(tmp_path):
     count, not by whatever happens to be on disk, or the minimal model would
     quietly serve a 3-member ensemble again.
     """
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.feature_cols = ["feat_a", "feat_b"]
     f.conformal_calibration = {3: 1.0}
     f.models[(3, 0.5)] = [_tiny_booster()]
@@ -1168,14 +1168,14 @@ def test_load_ignores_stale_extra_ensemble_members_on_disk(tmp_path):
     for ei in (1, 2):
         _tiny_booster().save_model(str(tmp_path / f"lgb_3d_q50_e{ei}.txt"))
 
-    g = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    g = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     g.load_models()
 
     assert len(g.models[(3, 0.5)]) == 1
 
 
 def test_saved_meta_records_the_current_artifact_version(tmp_path):
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.feature_cols = ["feat_a"]
     f.conformal_calibration = {3: 1.0}
     f.save_models()
@@ -1402,7 +1402,7 @@ def _predict_forecaster(tmp_path, q_hat=_Q_HAT, horizons=None, classifier=None):
     thresholds are left empty, so the served band is exactly what the conformal
     step produced.
     """
-    f = ItemForecaster(db_session=None, model_dir=str(tmp_path))
+    f = ItemForecaster(model_dir=str(tmp_path))
     f.feature_cols = ["price", "price_std_60d"]
     f.horizon_feature_cols = {}
     f.conformal_calibration = {h: q_hat for h in f.HORIZONS} if horizons is None else {h: q_hat for h in horizons}
@@ -1553,7 +1553,7 @@ def test_a_conformal_band_wide_enough_to_go_negative_stays_ordered(tmp_path):
     """
     from models.conformal import band
 
-    f = ItemForecaster(db_session=None, model_dir=str(tmp_path))
+    f = ItemForecaster(model_dir=str(tmp_path))
     cur, mid_ret, sigma, q_hat = 100.0, -20.0, 2.0, 60.0
     low_ret, high_ret = band(np.array([mid_ret]), np.array([sigma]), q_hat)
 
@@ -1582,7 +1582,7 @@ def test_ordering_holds_for_any_band_width(tmp_path, mid_ret, sigma, q_hat):
     """
     from models.conformal import band
 
-    f = ItemForecaster(db_session=None, model_dir=str(tmp_path))
+    f = ItemForecaster(model_dir=str(tmp_path))
     cur = 100.0
     low_ret, high_ret = band(np.array([mid_ret]), np.array([sigma]), q_hat)
 
@@ -1605,7 +1605,7 @@ def test_sanitization_cannot_be_relied_on_being_given_an_ordered_band(tmp_path):
     serving, so it has to hold for any upstream input, not just for the band
     predict() happens to build today.
     """
-    f = ItemForecaster(db_session=None, model_dir=str(tmp_path))
+    f = ItemForecaster(model_dir=str(tmp_path))
     result = _one_row_result(cur=100.0, low=120.0, mid=90.0, high=70.0)
     fc = f._sanitize_forecasts(result).iloc[0]["forecasts"][7]
     assert fc["low"] <= fc["mid"] <= fc["high"], fc
