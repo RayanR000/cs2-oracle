@@ -58,7 +58,7 @@ and `backtest/scoring.py`.
   frozen actuals without touching the archive. Never suggest `--reresolve` to make a number
   look better.
 - **Cohort mismatch masquerades as model drift.** Production reports the ≥$1 tier
-  (`api/serving_policy.py`, `MIN_SERVED_PRICE_USD = 1.0`); an all-tiers number is not
+  (`backtest/scoring.py`, `MIN_SERVED_PRICE_USD = 1.0`); an all-tiers number is not
   comparable to it. Confirm which cohort a figure describes before calling a gap real.
 - **`scripts/walkforward_backtest.py` is not this pipeline.** It skips multi-source voting and
   the source filters and means duplicate item-days where production takes an outlier-voted

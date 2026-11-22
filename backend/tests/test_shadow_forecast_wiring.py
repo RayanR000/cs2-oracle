@@ -64,10 +64,12 @@ def test_writer_receives_no_ranking_field():
 
 
 def test_public_schemas_carry_no_shadow():
-    from pathlib import Path
 
     import database
 
     assert "rank_score" not in set(database.ItemForecast.__table__.columns.keys())
-    schemas = (Path(__file__).resolve().parent.parent / "api" / "schemas.py").read_text()
-    assert "rank_score" not in schemas
+    # No public schemas since the API was retired (Phase 4 PR 5); the served store is the
+    # item_forecasts partitions, whose schema must not carry it either.
+    from db.ops_partitions import SPECS
+
+    assert "rank_score" not in SPECS["item_forecasts"].columns

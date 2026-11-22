@@ -3,7 +3,6 @@ paths:
   - "backend/models/{item_parser,forecaster}.py"
   - "backend/scripts/ab_test_*.py"
   - "backend/scripts/walkforward_backtest.py"
-  - "backend/api/**"
 ---
 
 # The item universe and the voted price

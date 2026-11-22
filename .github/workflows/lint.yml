@@ -73,7 +73,6 @@ jobs:
           python -c "
           import config
           import database
-          import api
           import models.forecaster
           import models.conformal
           import models.item_parser

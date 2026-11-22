@@ -44,10 +44,3 @@ def test_legacy_artifact_loads_direction_free(tmp_path):
     g = fc_module.ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     g.load_models()
     assert g.direction_models == {}
-
-
-def test_api_direction_remains_neutral():
-    from api.serving_policy import DIRECTION_DISCLOSED, served_direction
-
-    assert DIRECTION_DISCLOSED is False
-    assert served_direction("up", 7) == "neutral"

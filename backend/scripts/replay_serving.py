@@ -37,7 +37,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from api.serving_policy import MIN_SERVED_PRICE_USD
+from backtest.scoring import MIN_SERVED_PRICE_USD
 from db.archive import prices_relation
 from models import conformal
 from models.forecaster import ItemForecaster

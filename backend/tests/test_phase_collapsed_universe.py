@@ -189,38 +189,3 @@ def test_gate_item_selection_drops_them(tmp_path, monkeypatch):
 
 
 # -- the ranked product surfaces -------------------------------------------
-
-
-def test_opportunities_drop_them():
-    """`opportunities` takes each item's *latest* forecast with no date bound,
-    so an item that stops being forecast keeps its final row on the ranked
-    lists forever. The six real names are $200-500 knives — they rank."""
-    from api.routes import opportunities as opp
-
-    class _Item:
-        # `item_id` is a non-nullable column and `_load_items` also screens the
-        # phantom duplicate keys on it, so the stub has to carry it. Every
-        # inserter but the two phantom writers sets it to the market_hash_name.
-        def __init__(self, id, name):
-            self.id, self.name, self.item_id = id, name, name
-
-    items = [
-        _Item(1, "★ Gut Knife | Doppler (Factory New)"),
-        _Item(2, "AK-47 | Redline (Field-Tested)"),
-        _Item(3, "Sticker | Doppler Poison Frog (Foil)"),
-    ]
-
-    class _Query:
-        def filter(self, *a, **k):
-            return self
-
-        def all(self):
-            return items
-
-    class _DB:
-        def query(self, *a, **k):
-            return _Query()
-
-    loaded = opp._load_items([1, 2, 3], _DB())
-
-    assert set(loaded) == {2, 3}

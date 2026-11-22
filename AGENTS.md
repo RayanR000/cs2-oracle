@@ -1,7 +1,7 @@
 # CS2 Oracle
 
 Daily pipeline pulls 7 markets' prices from the csgotrader.app dumps, archives them to
-Parquet, serves them via FastAPI, and forecasts with LightGBM — one q50 model per horizon
+Parquet, and forecasts with LightGBM — one q50 model per horizon
 plus a binary exceedance head, with the served band scaled by a per-item climatology and
 calibrated by *signed* split conformal (asymmetric `(q_lo, q_hi)`, live 2026-08-19/20).
 
@@ -17,9 +17,11 @@ the modelled-sigma family is the dead end, not band width as such. See
 `backend/AGENTS.md` (DA is never quotable alone).
 
 **There is no frontend.** It was deleted on 2026-08-10 to be rebuilt from scratch; see
-`docs/changelog/2026-08-10-frontend-removed.md`. The API is the product surface for now.
+`docs/changelog/2026-08-10-frontend-removed.md`. **There is no API either** since Phase 4 PR 5
+(`docs/changelog/2026-11-22-api-retired.md`): the product is the Parquet forecast record until
+the frontend rebuild.
 
-- `backend/` — FastAPI (`main.py`), routers in `api/routes/`, ML in `models/forecaster.py`,
+- `backend/` — ML in `models/forecaster.py`,
   batch jobs in `scripts/`. See `backend/AGENTS.md`.
 - `price-archive/` — gitignored **plain local directory**, not a symlink and not a
   checkout. Editing it changes nothing in production: the durable archive is the separate
@@ -46,7 +48,6 @@ Backend, from `backend/`, through the venv (`venv/bin/python`, Python 3.13 local
   functions at all, just module-level code that opened a prod session and made five live
   Steam calls with `time.sleep(10)` between them. Deleted 2026-08-10, along with
   `scripts/test_social_signal.py`, which was why a bare `pytest -q` used to abort.
-- `venv/bin/uvicorn main:app --port 8000` — the API.
 
 ## Gotchas
 

@@ -105,6 +105,9 @@ the `users`/auth code, `sync_events_from_news.py`, `event_correlation_analysis.p
 Keep `serving_policy.MIN_SERVED_PRICE_USD` if `outside_baseline.py` or the backtest import it: move
 the constant to `backtest/scoring.py` instead of deleting it. Add a changelog note: "no API until the
 frontend rebuild".
+**Done 2026-11-22** (`changelog/2026-11-22-api-retired.md`). The floor moved to
+`backtest/scoring.py`; invariant 5's tests now check the `item_forecasts` partition schema; the
+`fastapi`/`uvicorn` dependencies and `config.secret_key` are left for PR 6.
 
 ## PR 6: delete the engine
 

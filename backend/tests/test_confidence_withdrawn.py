@@ -31,26 +31,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import api.routes.items as items_mod
-from api import schemas
 from database import ItemForecast
-
-
-class TestNotPublished:
-    def test_prediction_has_no_confidence_field(self):
-        assert "confidence" not in schemas.PredictionOut.model_fields
-
-    def test_trend_analysis_has_no_confidence_field(self):
-        assert "confidence" not in schemas.TrendAnalysisOut.model_fields
-
-    def test_items_route_never_reads_a_forecast_confidence(self):
-        """A source-level guard: these endpoints fall back across a Parquet
-        path and a DB path, and the DB path uses DISTINCT ON, which SQLite
-        cannot compile — so the constructions cannot all be exercised here."""
-        source = Path(items_mod.__file__).read_text()
-        assert "ItemForecast.confidence" not in source
-        assert "confidence=confidence" not in source
-        assert ".confidence or " not in source
 
 
 class TestInstrumentSurvives:
@@ -60,5 +41,5 @@ class TestInstrumentSurvives:
         assert "confidence" in ItemForecast.__table__.columns
 
     def test_daily_run_still_writes_it(self):
-        source = (Path(items_mod.__file__).parents[2] / "scripts" / "forecast_prices.py").read_text()
+        source = (Path(__file__).resolve().parents[1] / "scripts" / "forecast_prices.py").read_text()
         assert '"confidence": fcast.get("confidence")' in source

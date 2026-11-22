@@ -158,44 +158,6 @@ def test_voted_cache_is_invalidated():
     assert ItemForecaster.VOTED_CACHE_VERSION >= 4
 
 
-def test_opportunities_drop_the_phantom_and_keep_the_twin():
-    """The ranked surfaces take each item's *latest* forecast with no date
-    bound, so both copies sit there permanently: 3,149 of the 8,691 forecast
-    items are phantoms (2026-08-08), i.e. 36% of the served universe is a
-    second copy of something already listed.
-
-    The phantom's `name` holds the **real** market_hash_name — that is what
-    makes it repairable, and it is also why the phase-collapse check on `name`
-    does not catch it. The key is `item_id`."""
-    from api.routes import opportunities as opp
-
-    class _Item:
-        def __init__(self, id, item_id, name):
-            self.id, self.item_id, self.name = id, item_id, name
-
-    items = [
-        # The phantom and its twin: same name, different key.
-        _Item(1, "ak-47-redline-field-tested", "AK-47 | Redline (Field-Tested)"),
-        _Item(2, "AK-47 | Redline (Field-Tested)", "AK-47 | Redline (Field-Tested)"),
-        _Item(3, "Glove Case", "Glove Case"),
-    ]
-
-    class _Query:
-        def filter(self, *a, **k):
-            return self
-
-        def all(self):
-            return items
-
-    class _DB:
-        def query(self, *a, **k):
-            return _Query()
-
-    loaded = opp._load_items([1, 2, 3], _DB())
-
-    assert set(loaded) == {2, 3}
-
-
 def test_purge_script_shares_the_one_predicate():
     """`purge_phantom_items.py` decides what to delete from production. If its
     notion of a phantom drifted from the reader's, the archive and the model

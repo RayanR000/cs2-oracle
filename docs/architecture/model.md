@@ -647,7 +647,8 @@ price tier, ≥$1 headline), per-forecast outcomes in `forecast_outcomes`.
 
 Tier 0 (<$1) is reported separately rather than folded into the headline: it is ~72% of the
 evaluated universe, and at those prices one cent is a 20% move, so the direction label is
-dominated by tick quantisation. `api/serving_policy.py:37` sets `MIN_SERVED_PRICE_USD = 1.0` equal to
+dominated by tick quantisation. `backtest/scoring.py` sets `MIN_SERVED_PRICE_USD = 1.0` (in `api/serving_policy.py` until the API was
+retired) equal to
 `HEADLINE_MIN_TIER` so the population the product shows is the population the headline describes.
 
 **Metrics per horizon:** MAE, RMSE, MAPE, wMAPE, MAPE by tier; the PT block (below); DA with

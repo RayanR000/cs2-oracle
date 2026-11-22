@@ -84,13 +84,15 @@ def test_thin_dates_dropped_and_counted(tmp_path, monkeypatch):
 
 
 def test_rank_score_stays_shadow_only():
-    from pathlib import Path
 
     import database
 
     assert "rank_score" not in set(database.ItemForecast.__table__.columns.keys())
-    schemas = (Path(__file__).resolve().parent.parent / "api" / "schemas.py").read_text()
-    assert "rank_score" not in schemas
+    # No public schemas since the API was retired (Phase 4 PR 5); the served store is the
+    # item_forecasts partitions, whose schema must not carry it either.
+    from db.ops_partitions import SPECS
+
+    assert "rank_score" not in SPECS["item_forecasts"].columns
 
 
 def test_supported_leaves_champion_config_alone(tmp_path, monkeypatch):
