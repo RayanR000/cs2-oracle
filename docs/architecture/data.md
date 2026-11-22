@@ -92,7 +92,8 @@ joining a forecast to its own price history needed a round-trip to Supabase.
 `item_forecasts` and `forecast_outcomes` now denormalise the slug onto the
 **Parquet mirror only** — the DB side has `items` to join against. `append_table`
 replaces whole rows on the dedup key, so *every* mirror writer must supply the
-column or it blanks. `scripts/backfill_ops_item_slug.py` fills pre-existing rows;
+column or it blanks. A one-off `scripts/backfill_ops_item_slug.py` filled pre-existing rows
+(deleted in Phase 4 PR 2b; it read Postgres `items`);
 31,422 `forecast_outcomes` rows point at `item_id`s with no `items` row and keep
 a NULL slug.
 
@@ -359,7 +360,6 @@ no longer resolves. See `docs/changelog/2026-08-01-deterministic-backtest.md`.
 | `db/archive.py` | The one price-archive reader: `prices_relation()` (typed projection over the glob), `price_files()`, `canonical_order()` |
 | `append_to_parquet.py` | Daily: snapshot CSV → monthly `prices-YYYY-MM` + yearly `exchange-rates-YYYY`, in canonical order with `day` as DATE |
 | `normalize_price_schema.py` | One-off: one schema for every prices file — materialise `source`, cast `day` to DATE, canonical order. Idempotent; dry-run by default |
-| `backfill_ops_item_slug.py` | One-off: stamp `item_slug` onto existing `ops/*.parquet` rows. Idempotent; dry-run by default |
 | `compact_price_archive.py` | One-off: drop the redundant `median_price`/`min_price`/`max_price` columns and retire `snapshots-*`. Idempotent; dry-run by default |
 | `db/parquet.py` | The `ops/` store: `append()` (concat-and-dedup, full rewrite) and `query()` (DuckDB context manager). Serialises nested values to JSON text |
 | `init_local_db.py` | Rebuild a local `items` table from the archive and re-derive `is_backfilled` |
