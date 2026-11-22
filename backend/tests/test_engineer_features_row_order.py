@@ -14,7 +14,6 @@ two identical h=3 builds differed by 16 rows. That is the `paired_mde`
 from __future__ import annotations
 
 from datetime import date, timedelta
-from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -27,7 +26,7 @@ _EVENTS = pd.DataFrame(columns=["date", "event_type", "name"])
 
 @pytest.fixture
 def forecaster(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 def _multi_source(n_items=3, n_days=160, n_sources=5, start=date(2025, 1, 1)):

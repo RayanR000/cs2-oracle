@@ -29,8 +29,6 @@ See docs/changelog/2026-08-12-conformal-basis-follows-serving.md.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -41,7 +39,7 @@ from models.forecaster import ANCHOR_TIED_COL, ItemForecaster, calibration_targe
 def _forecaster(tmp_path):
     """Never the default model_dir — save paths there clobber production
     artifacts, which are gitignored and unrecoverable."""
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
 
 
 class TestTheMechanism:

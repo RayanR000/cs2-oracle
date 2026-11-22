@@ -435,7 +435,10 @@ def run_forecast(
     db = SessionLocal()
     try:
         forecaster = ItemForecaster(
-            db_session=db, prune_failed_groups=False, served_cohort_share=_served_cohort_share(), model_dir=_model_dir()
+            serving_reads=True,
+            prune_failed_groups=False,
+            served_cohort_share=_served_cohort_share(),
+            model_dir=_model_dir(),
         )
         # Instance override, so the class default is untouched for anything else
         # importing ItemForecaster in this process.
@@ -525,11 +528,11 @@ def run_forecast(
                 per_item_row_sampling=_train_per_item_rows(),
             )
             has_models = True
-            logger.info("Refreshing DB connection after training...")
+            # The session went stale over a long retrain; reopen it for the in-run backtest.
+            # The forecaster itself holds none since Phase 4 PR 4.
             with contextlib.suppress(Exception):
                 db.close()
             db = SessionLocal()
-            forecaster.db = db
 
         if predict_smoke:
             # Exercises the predict PATH and writes nothing. It exists because

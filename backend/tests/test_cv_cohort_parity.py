@@ -14,7 +14,6 @@ that reads it.
 from __future__ import annotations
 
 from datetime import date, timedelta
-from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -55,7 +54,7 @@ def _tier(price: float) -> int:
 
 
 def _cv_forecaster(tmp_path, feature_cols):
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.QUANTILES = [0.5]
     f.feature_cols = list(feature_cols)
     # Shrink the expanding window so a synthetic frame yields >= 2 folds.
@@ -184,7 +183,7 @@ def trained():
     from unittest.mock import patch
 
     with tempfile.TemporaryDirectory() as tmp:
-        f = ItemForecaster(db_session=MagicMock(), model_dir=tmp)
+        f = ItemForecaster(serving_reads=True, model_dir=tmp)
         f.N_ENSEMBLES = 1
         f.SKIP_HP_HORIZONS = list(f.HORIZONS)  # no Optuna
         f.CV_MIN_TRAIN_DAYS = 40

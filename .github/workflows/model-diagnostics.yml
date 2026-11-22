@@ -577,7 +577,6 @@ jobs:
         if: inputs.replay_anchors != ''
         working-directory: ./backend
         env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
           ENVIRONMENT: production
           DEBUG: false
           TIER_LEAD_FEATURE: ${{ inputs.tier_lead && '1' || '0' }}

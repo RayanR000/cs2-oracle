@@ -8,8 +8,6 @@ without the pair byte-identical to the old band. They do not run a full train (~
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import numpy as np
 from models.forecaster import ItemForecaster
 
@@ -17,7 +15,7 @@ from tests._source import method_closure_source
 
 
 def _forecaster(tmp_path):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
 
 
 def test_fresh_forecaster_exposes_empty_signed_offset_stores(tmp_path):

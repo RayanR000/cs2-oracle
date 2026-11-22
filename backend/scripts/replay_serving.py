@@ -38,7 +38,6 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from api.serving_policy import MIN_SERVED_PRICE_USD
-from database import SessionLocal
 from db.archive import prices_relation
 from models import conformal
 from models.forecaster import ItemForecaster
@@ -1053,274 +1052,266 @@ def main() -> int:
             f"collection, not the model — do not publish them as a measurement."
         )
 
-    db = SessionLocal()
-    try:
-        fc = ItemForecaster(db_session=db, prune_failed_groups=False, model_dir=_model_dir())
-        if not fc.load_models():
-            logger.error(
-                "No usable model artifact. Train one first — the replay serves an artifact, it does not build one."
-            )
+    fc = ItemForecaster(serving_reads=True, prune_failed_groups=False, model_dir=_model_dir())
+    if not fc.load_models():
+        logger.error(
+            "No usable model artifact. Train one first — the replay serves an artifact, it does not build one."
+        )
+        return 2
+
+    logger.info(f"Replaying the serving path at anchor {anchor}")
+    logger.info(
+        f"  artifact: xs_rank={fc._artifact_xs_rank} "
+        f"floor={fc._artifact_min_median_price} "
+        f"skipped={fc._artifact_xs_rank_skipped}"
+    )
+
+    served = fc.predict()
+    if served.empty:
+        logger.error("predict() returned nothing at this anchor.")
+        return 1
+
+    horizons = sorted({h for f in served["forecasts"] for h in f})
+    if want is not None:
+        missing = want - set(horizons)
+        if missing:
+            logger.error(f"--horizons asked for {sorted(missing)}, which this artifact does not serve ({horizons}).")
             return 2
-
-        logger.info(f"Replaying the serving path at anchor {anchor}")
+        horizons = sorted(want)
         logger.info(
-            f"  artifact: xs_rank={fc._artifact_xs_rank} "
-            f"floor={fc._artifact_min_median_price} "
-            f"skipped={fc._artifact_xs_rank_skipped}"
+            f"  scoring only {horizons} -- the rest of this "
+            f"artifact's boosters were not trained under these "
+            f"flags, so their rows would not be a measurement."
+        )
+    outcomes = _outcomes(fc, anchor, horizons)
+    logger.info(f"  {len(served):,} served rows, {outcomes['item_id'].nunique():,} items in the outcome window")
+
+    naive = _naive_baseline(fc, outcomes, anchor)
+    logger.info(f"  -return_1d available for {len(naive):,} items")
+
+    floor = fc._artifact_min_median_price
+    if not floor:
+        floor = MIN_SERVED_PRICE_USD
+        logger.warning(
+            f"  the artifact records no train_min_median_price; scoring the "
+            f"served cohort at >= ${floor:g} instead. Pooling every item "
+            f"would report the penny-item score "
+            f"(docs/changelog offline-DA-inflated-by-stale-prices)."
+        )
+    # One denominator for every arm, computed once per anchor. `rankIC`
+    # below divides by what THIS run quoted; `pinnedIC` divides by the
+    # shipped smoothed anchor whatever this run quoted, so two arms that
+    # quote different prices are still comparable. They are equal today,
+    # because production quotes the pinned statistic -- a divergence means
+    # an arm is live.
+    pinned = _pinned_anchor(outcomes, anchor)
+    # Also a constant across arms, and for the same reason: the tied cohort
+    # is where the durable served signal was measured and the deviating one
+    # is what the freshness gate reads, so neither may be redefined by the
+    # arm being scored.
+    tied = _tied_mask(outcomes, anchor)
+    if not _pin_matches_production():
+        from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
+
+        logger.warning(
+            f"  the pinned denominator ({PINNED_SMOOTH_WINDOW} obs / "
+            f"{PINNED_MAX_SPAN_DAYS}d) no longer matches production "
+            f"({SMOOTH_WINDOW} obs / {MAX_WINDOW_SPAN_DAYS}d). `pinnedIC` "
+            f"is still comparable across arms; it is no longer the basis "
+            f"production quotes from. Check FALLBACK_MAX_AGE_DAYS."
         )
 
-        served = fc.predict()
-        if served.empty:
-            logger.error("predict() returned nothing at this anchor.")
-            return 1
+    print(f"\nSERVING REPLAY @ {anchor}   (cohort floor >= ${floor:g})")
+    print(
+        f"{'h':>4} {'n':>7} {'DA%':>7} {'down%':>7} {'edge':>7} "
+        f"{'rankIC':>8} {'naiveIC':>8} {'vs naive':>9} {'pinnedIC':>9}"
+    )
 
-        horizons = sorted({h for f in served["forecasts"] for h in f})
-        if want is not None:
-            missing = want - set(horizons)
-            if missing:
-                logger.error(
-                    f"--horizons asked for {sorted(missing)}, which this artifact does not serve ({horizons})."
-                )
-                return 2
-            horizons = sorted(want)
-            logger.info(
-                f"  scoring only {horizons} -- the rest of this "
-                f"artifact's boosters were not trained under these "
-                f"flags, so their rows would not be a measurement."
-            )
-        outcomes = _outcomes(fc, anchor, horizons)
-        logger.info(f"  {len(served):,} served rows, {outcomes['item_id'].nunique():,} items in the outcome window")
+    dollar_rows: list[tuple[int, dict]] = []
+    coverage_rows: list[tuple[int, dict]] = []
+    sigma_rows: list[tuple[int, list[dict]]] = []
+    reliability_rows: list[tuple[int, list[dict]]] = []
+    for h in horizons:
+        frame = _served_rows(served, h)
+        if frame.empty:
+            continue
 
-        naive = _naive_baseline(fc, outcomes, anchor)
-        logger.info(f"  -return_1d available for {len(naive):,} items")
+        realised = _resolve(outcomes, anchor + timedelta(days=h), after=anchor)
+        frame = frame.merge(realised, on="item_id", how="inner")
+        # Before the returns are computed: a merge resets the index, and
+        # the return Series are positionally aligned to this frame.
+        frame = frame.merge(naive, on="item_id", how="left")
+        # The served cohort is the only population the headline describes.
+        frame = frame[frame["current"] >= floor]
+        frame = frame[np.isfinite(frame["realised"]) & (frame["current"] > 0)].reset_index(drop=True)
+        if len(frame) < 3:
+            print(f"{h:>4} {len(frame):>7}   too few resolved outcomes")
+            continue
 
-        floor = fc._artifact_min_median_price
-        if not floor:
-            floor = MIN_SERVED_PRICE_USD
-            logger.warning(
-                f"  the artifact records no train_min_median_price; scoring the "
-                f"served cohort at >= ${floor:g} instead. Pooling every item "
-                f"would report the penny-item score "
-                f"(docs/changelog offline-DA-inflated-by-stale-prices)."
-            )
-        # One denominator for every arm, computed once per anchor. `rankIC`
-        # below divides by what THIS run quoted; `pinnedIC` divides by the
-        # shipped smoothed anchor whatever this run quoted, so two arms that
-        # quote different prices are still comparable. They are equal today,
-        # because production quotes the pinned statistic -- a divergence means
-        # an arm is live.
-        pinned = _pinned_anchor(outcomes, anchor)
-        # Also a constant across arms, and for the same reason: the tied cohort
-        # is where the durable served signal was measured and the deviating one
-        # is what the freshness gate reads, so neither may be redefined by the
-        # arm being scored.
-        tied = _tied_mask(outcomes, anchor)
-        if not _pin_matches_production():
-            from backtest.price_resolution import MAX_WINDOW_SPAN_DAYS, SMOOTH_WINDOW
+        actual_ret = frame["realised"] / frame["current"] - 1.0
+        pred_ret = frame["mid"] / frame["current"] - 1.0
 
-            logger.warning(
-                f"  the pinned denominator ({PINNED_SMOOTH_WINDOW} obs / "
-                f"{PINNED_MAX_SPAN_DAYS}d) no longer matches production "
-                f"({SMOOTH_WINDOW} obs / {MAX_WINDOW_SPAN_DAYS}d). `pinnedIC` "
-                f"is still comparable across arms; it is no longer the basis "
-                f"production quotes from. Check FALLBACK_MAX_AGE_DAYS."
-            )
-
-        print(f"\nSERVING REPLAY @ {anchor}   (cohort floor >= ${floor:g})")
+        hit = (np.sign(pred_ret) == np.sign(actual_ret)) & (actual_ret != 0)
+        scored = actual_ret != 0
+        da = 100.0 * hit.sum() / max(scored.sum(), 1)
+        down = 100.0 * (actual_ret < 0).mean()
+        # The runnable baseline is always-down, never constant_call --
+        # invariant #4 in backend/AGENTS.md.
+        base = max(down, 100.0 - down)
+        ic = _rank_ic(pred_ret.to_numpy(), actual_ret.to_numpy())
+        # The baseline the model measurably loses to on rank IC in CV.
+        have_naive = frame["naive"].notna().to_numpy()
+        naive_ic = (
+            _rank_ic(frame["naive"].to_numpy()[have_naive], actual_ret.to_numpy()[have_naive])
+            if have_naive.sum() >= 3
+            else float("nan")
+        )
+        pinned_ic = _pinned_rank_ic(frame, pinned)
         print(
-            f"{'h':>4} {'n':>7} {'DA%':>7} {'down%':>7} {'edge':>7} "
-            f"{'rankIC':>8} {'naiveIC':>8} {'vs naive':>9} {'pinnedIC':>9}"
+            f"{h:>4} {len(frame):>7} {da:>7.2f} {down:>7.2f} "
+            f"{da - base:>+7.2f} {ic:>8.4f} {naive_ic:>8.4f} "
+            f"{ic - naive_ic:>+9.4f} {pinned_ic:>9.4f}"
         )
+        dollar_rows += [(h, r) for r in _dollar_error_rows(frame, pinned, tied)]
+        coverage_rows.append((h, _coverage_row(frame)))
+        # Same frame, so the marginal and conditional tables describe the
+        # same rows -- two coverage figures over different cohorts would not
+        # be decomposable into each other.
+        sigma_rows.append((h, _coverage_by_sigma_rows(frame)))
+        # Exceedance-head calibration on the SAME frame. Empty (skipped
+        # below) unless the artifact carries a head — EXCEEDANCE_HEAD off
+        # emits no exceed_p, and this is the pre-flip validation of it.
+        rel = _reliability_rows(frame, actual_ret.to_numpy())
+        if rel:
+            reliability_rows.append((h, rel))
 
-        dollar_rows: list[tuple[int, dict]] = []
-        coverage_rows: list[tuple[int, dict]] = []
-        sigma_rows: list[tuple[int, list[dict]]] = []
-        reliability_rows: list[tuple[int, list[dict]]] = []
+    # The gate of the freshness experiment, and the only table here that two
+    # arms can be compared on: rank IC above divides by the served quote,
+    # which an arm moves. Read the DEVIATING row -- on the tied cohort an arm
+    # that chooses between the raw quote and its own median serves the same
+    # price, so a pooled number dilutes the effect with rows that cannot
+    # move (`2026-08-11-smoothed-anchor-label-measured.md`).
+    print(f"\nDOLLAR ERROR @ {anchor}   (|x - realised| / realised, %; basis-free)")
+    print(DOLLAR_HEADER)
+    for h, r in dollar_rows:
+        print(_dollar_line(h, r))
+
+    # The band, which this script scored nothing about until 2026-08-11.
+    # q_hat is fitted to cover 80% of residuals to a centre `predict` then
+    # moves (`_recenter_on_direction`), so `cov%` short of `target%` with the
+    # misses stacked on one side is that displacement, not a wide market.
+    # `conformal_centre` in meta.json says which centre this artifact's q_hat
+    # was fitted around.
+    centre = getattr(fc, "conformal_centre", {}) or {}
+    centres = ", ".join(f"{h}d={centre.get(h, 'unknown')}" for h, _ in coverage_rows)
+    print(f"\nBAND COVERAGE @ {anchor}   (low <= realised <= high; conformal_centre: {centres})")
+    print(COVERAGE_HEADER)
+    for h, r in coverage_rows:
+        print(_coverage_line(h, r))
+
+    # The conditional half. `cov%` above is marginal, and a band can hit 80%
+    # marginally while covering 57% of its low-sigma items and 96% of its
+    # high-sigma ones -- which is what the OOF records say this band does.
+    # Stratum 1 is the NARROWEST band, i.e. the lowest sigma.
+    print(
+        f"\nBAND COVERAGE BY SIGMA @ {anchor}   "
+        f"(quintiles of the served half-width, which is monotone in "
+        f"sigma; stratum 1 = lowest sigma)"
+    )
+    print(SIGMA_HEADER)
+    for h, srows in sigma_rows:
+        for r in srows:
+            print(_sigma_line(h, r))
+        if srows:
+            covs = [100 * r["cov"] for r in srows]
+            print(
+                f"{h:>4} {'tilt':>8} {'':>7} "
+                f"{sigma_tilt_pp(srows):>8.2f} "
+                f"{covs[-1] - covs[0]:>+8.2f}   "
+                f"mean |cov-nominal| pp, and the ramp (last - first). "
+                f"NOT level-matched: read beside cov% above."
+            )
+
+    # Exceedance-head calibration: does a stated P(upside move > cost)
+    # realise at that rate? Printed only when the artifact carries a head
+    # (EXCEEDANCE_HEAD=1 at train time); otherwise there is no exceed_p to
+    # score and the block is silent. This is the pre-flip validation, the
+    # exceedance analogue of BAND COVERAGE — it runs on replayed forecasts
+    # because no served exceed_p exists in the outcomes store yet.
+    if reliability_rows:
+        print(
+            f"\nEXCEEDANCE RELIABILITY @ {anchor}   "
+            f"(pred vs realised P(actual_ret > cost); one-sided, "
+            f"tier-thresholded; well-calibrated => pred% ~ realized%)"
+        )
+        print(RELIABILITY_HEADER)
+        for h, rel in reliability_rows:
+            for r in rel:
+                print(_reliability_line(h, r))
+            print(
+                f"{h:>4} {'ECE':>10} {'':>7} "
+                f"{100 * _reliability_ece(rel):>8.2f}   "
+                f"count-weighted mean |pred-realized| pp"
+            )
+
+    if "--basis-sweep" in sys.argv:
+        # The SAME served mids, scored against four label bases. Everything
+        # else -- artifact, anchor, items, transforms -- is held fixed, so a
+        # difference here is the label definition and nothing else.
+        print(f"\nLABEL BASIS SWEEP @ {anchor}   (same served mids; 'cv' is prepare_targets' own basis)")
+        print(f"{'h':>4} {'basis':>10} {'n':>7} {'rankIC':>8} {'vs served':>10}")
         for h in horizons:
-            frame = _served_rows(served, h)
-            if frame.empty:
+            base_f = _served_rows(served, h)
+            if base_f.empty:
                 continue
+            base_f = base_f[base_f["current"] >= floor]
+            bases = _basis_frame(fc, outcomes, anchor, h)
+            merged = base_f.merge(bases, on="item_id", how="left")
+            # pred_ret keeps the served denominator throughout: the model
+            # quoted a dollar mid against it, and re-deriving the prediction
+            # per basis would change the prediction as well as the label.
+            pred = (merged["mid"] / merged["current"] - 1.0).to_numpy()
+            served_ic = None
+            for name in ("served", "cv", "num_only", "den_only", "cv_lag"):
+                ok = np.isfinite(merged[name].to_numpy()) & np.isfinite(pred)
+                ic_b = _rank_ic(pred[ok], merged[name].to_numpy()[ok]) if ok.sum() >= 3 else float("nan")
+                if name == "served":
+                    served_ic = ic_b
+                delta = "" if name == "served" else f"{ic_b - served_ic:>+10.4f}"
+                print(f"{h:>4} {name:>10} {int(ok.sum()):>7} {ic_b:>8.4f} {delta}")
 
-            realised = _resolve(outcomes, anchor + timedelta(days=h), after=anchor)
-            frame = frame.merge(realised, on="item_id", how="inner")
-            # Before the returns are computed: a merge resets the index, and
-            # the return Series are positionally aligned to this frame.
-            frame = frame.merge(naive, on="item_id", how="left")
-            # The served cohort is the only population the headline describes.
-            frame = frame[frame["current"] >= floor]
-            frame = frame[np.isfinite(frame["realised"]) & (frame["current"] > 0)].reset_index(drop=True)
-            if len(frame) < 3:
-                print(f"{h:>4} {len(frame):>7}   too few resolved outcomes")
-                continue
-
-            actual_ret = frame["realised"] / frame["current"] - 1.0
-            pred_ret = frame["mid"] / frame["current"] - 1.0
-
-            hit = (np.sign(pred_ret) == np.sign(actual_ret)) & (actual_ret != 0)
-            scored = actual_ret != 0
-            da = 100.0 * hit.sum() / max(scored.sum(), 1)
-            down = 100.0 * (actual_ret < 0).mean()
-            # The runnable baseline is always-down, never constant_call --
-            # invariant #4 in backend/AGENTS.md.
-            base = max(down, 100.0 - down)
-            ic = _rank_ic(pred_ret.to_numpy(), actual_ret.to_numpy())
-            # The baseline the model measurably loses to on rank IC in CV.
-            have_naive = frame["naive"].notna().to_numpy()
-            naive_ic = (
-                _rank_ic(frame["naive"].to_numpy()[have_naive], actual_ret.to_numpy()[have_naive])
-                if have_naive.sum() >= 3
-                else float("nan")
-            )
-            pinned_ic = _pinned_rank_ic(frame, pinned)
-            print(
-                f"{h:>4} {len(frame):>7} {da:>7.2f} {down:>7.2f} "
-                f"{da - base:>+7.2f} {ic:>8.4f} {naive_ic:>8.4f} "
-                f"{ic - naive_ic:>+9.4f} {pinned_ic:>9.4f}"
-            )
-            dollar_rows += [(h, r) for r in _dollar_error_rows(frame, pinned, tied)]
-            coverage_rows.append((h, _coverage_row(frame)))
-            # Same frame, so the marginal and conditional tables describe the
-            # same rows -- two coverage figures over different cohorts would not
-            # be decomposable into each other.
-            sigma_rows.append((h, _coverage_by_sigma_rows(frame)))
-            # Exceedance-head calibration on the SAME frame. Empty (skipped
-            # below) unless the artifact carries a head — EXCEEDANCE_HEAD off
-            # emits no exceed_p, and this is the pre-flip validation of it.
-            rel = _reliability_rows(frame, actual_ret.to_numpy())
-            if rel:
-                reliability_rows.append((h, rel))
-
-        # The gate of the freshness experiment, and the only table here that two
-        # arms can be compared on: rank IC above divides by the served quote,
-        # which an arm moves. Read the DEVIATING row -- on the tied cohort an arm
-        # that chooses between the raw quote and its own median serves the same
-        # price, so a pooled number dilutes the effect with rows that cannot
-        # move (`2026-08-11-smoothed-anchor-label-measured.md`).
-        print(f"\nDOLLAR ERROR @ {anchor}   (|x - realised| / realised, %; basis-free)")
-        print(DOLLAR_HEADER)
-        for h, r in dollar_rows:
-            print(_dollar_line(h, r))
-
-        # The band, which this script scored nothing about until 2026-08-11.
-        # q_hat is fitted to cover 80% of residuals to a centre `predict` then
-        # moves (`_recenter_on_direction`), so `cov%` short of `target%` with the
-        # misses stacked on one side is that displacement, not a wide market.
-        # `conformal_centre` in meta.json says which centre this artifact's q_hat
-        # was fitted around.
-        centre = getattr(fc, "conformal_centre", {}) or {}
-        centres = ", ".join(f"{h}d={centre.get(h, 'unknown')}" for h, _ in coverage_rows)
-        print(f"\nBAND COVERAGE @ {anchor}   (low <= realised <= high; conformal_centre: {centres})")
-        print(COVERAGE_HEADER)
-        for h, r in coverage_rows:
-            print(_coverage_line(h, r))
-
-        # The conditional half. `cov%` above is marginal, and a band can hit 80%
-        # marginally while covering 57% of its low-sigma items and 96% of its
-        # high-sigma ones -- which is what the OOF records say this band does.
-        # Stratum 1 is the NARROWEST band, i.e. the lowest sigma.
-        print(
-            f"\nBAND COVERAGE BY SIGMA @ {anchor}   "
-            f"(quintiles of the served half-width, which is monotone in "
-            f"sigma; stratum 1 = lowest sigma)"
-        )
-        print(SIGMA_HEADER)
-        for h, srows in sigma_rows:
-            for r in srows:
-                print(_sigma_line(h, r))
-            if srows:
-                covs = [100 * r["cov"] for r in srows]
-                print(
-                    f"{h:>4} {'tilt':>8} {'':>7} "
-                    f"{sigma_tilt_pp(srows):>8.2f} "
-                    f"{covs[-1] - covs[0]:>+8.2f}   "
-                    f"mean |cov-nominal| pp, and the ramp (last - first). "
-                    f"NOT level-matched: read beside cov% above."
+            # The decisive split. Where the anchor quote equals its own
+            # local median, `cv` and `served` share a denominator exactly,
+            # so the shared-quote channel cannot operate. If the gap lives
+            # in the deviating half and vanishes in the tied half, the
+            # deviation IS the noise the model is reading.
+            # fillna before astype: the merge is a LEFT join, so an item
+            # the basis frame never saw arrives as NaN and the column comes
+            # back float. `~` on that raises rather than masking, which is
+            # how this was caught -- but "no anchor observed" is not "tied".
+            tied = merged["anchor_is_tied"].fillna(False).astype(bool).to_numpy()
+            for label, mask in (("tied", tied), ("deviating", ~tied)):
+                fin = (
+                    np.isfinite(merged["cv"].to_numpy())
+                    & np.isfinite(merged["served"].to_numpy())
+                    & np.isfinite(pred)
+                    & mask
                 )
-
-        # Exceedance-head calibration: does a stated P(upside move > cost)
-        # realise at that rate? Printed only when the artifact carries a head
-        # (EXCEEDANCE_HEAD=1 at train time); otherwise there is no exceed_p to
-        # score and the block is silent. This is the pre-flip validation, the
-        # exceedance analogue of BAND COVERAGE — it runs on replayed forecasts
-        # because no served exceed_p exists in the outcomes store yet.
-        if reliability_rows:
-            print(
-                f"\nEXCEEDANCE RELIABILITY @ {anchor}   "
-                f"(pred vs realised P(actual_ret > cost); one-sided, "
-                f"tier-thresholded; well-calibrated => pred% ~ realized%)"
-            )
-            print(RELIABILITY_HEADER)
-            for h, rel in reliability_rows:
-                for r in rel:
-                    print(_reliability_line(h, r))
-                print(
-                    f"{h:>4} {'ECE':>10} {'':>7} "
-                    f"{100 * _reliability_ece(rel):>8.2f}   "
-                    f"count-weighted mean |pred-realized| pp"
-                )
-
-        if "--basis-sweep" in sys.argv:
-            # The SAME served mids, scored against four label bases. Everything
-            # else -- artifact, anchor, items, transforms -- is held fixed, so a
-            # difference here is the label definition and nothing else.
-            print(f"\nLABEL BASIS SWEEP @ {anchor}   (same served mids; 'cv' is prepare_targets' own basis)")
-            print(f"{'h':>4} {'basis':>10} {'n':>7} {'rankIC':>8} {'vs served':>10}")
-            for h in horizons:
-                base_f = _served_rows(served, h)
-                if base_f.empty:
+                if fin.sum() < 3:
+                    print(f"{h:>4} {label:>10} {int(fin.sum()):>7}   too few")
                     continue
-                base_f = base_f[base_f["current"] >= floor]
-                bases = _basis_frame(fc, outcomes, anchor, h)
-                merged = base_f.merge(bases, on="item_id", how="left")
-                # pred_ret keeps the served denominator throughout: the model
-                # quoted a dollar mid against it, and re-deriving the prediction
-                # per basis would change the prediction as well as the label.
-                pred = (merged["mid"] / merged["current"] - 1.0).to_numpy()
-                served_ic = None
-                for name in ("served", "cv", "num_only", "den_only", "cv_lag"):
-                    ok = np.isfinite(merged[name].to_numpy()) & np.isfinite(pred)
-                    ic_b = _rank_ic(pred[ok], merged[name].to_numpy()[ok]) if ok.sum() >= 3 else float("nan")
-                    if name == "served":
-                        served_ic = ic_b
-                    delta = "" if name == "served" else f"{ic_b - served_ic:>+10.4f}"
-                    print(f"{h:>4} {name:>10} {int(ok.sum()):>7} {ic_b:>8.4f} {delta}")
+                ic_cv = _rank_ic(pred[fin], merged["cv"].to_numpy()[fin])
+                ic_sv = _rank_ic(pred[fin], merged["served"].to_numpy()[fin])
+                print(
+                    f"{h:>4} {label:>10} {int(fin.sum()):>7} {ic_sv:>8.4f} {ic_cv - ic_sv:>+10.4f}  (cv {ic_cv:+.4f})"
+                )
 
-                # The decisive split. Where the anchor quote equals its own
-                # local median, `cv` and `served` share a denominator exactly,
-                # so the shared-quote channel cannot operate. If the gap lives
-                # in the deviating half and vanishes in the tied half, the
-                # deviation IS the noise the model is reading.
-                # fillna before astype: the merge is a LEFT join, so an item
-                # the basis frame never saw arrives as NaN and the column comes
-                # back float. `~` on that raises rather than masking, which is
-                # how this was caught -- but "no anchor observed" is not "tied".
-                tied = merged["anchor_is_tied"].fillna(False).astype(bool).to_numpy()
-                for label, mask in (("tied", tied), ("deviating", ~tied)):
-                    fin = (
-                        np.isfinite(merged["cv"].to_numpy())
-                        & np.isfinite(merged["served"].to_numpy())
-                        & np.isfinite(pred)
-                        & mask
-                    )
-                    if fin.sum() < 3:
-                        print(f"{h:>4} {label:>10} {int(fin.sum()):>7}   too few")
-                        continue
-                    ic_cv = _rank_ic(pred[fin], merged["cv"].to_numpy()[fin])
-                    ic_sv = _rank_ic(pred[fin], merged["served"].to_numpy()[fin])
-                    print(
-                        f"{h:>4} {label:>10} {int(fin.sum()):>7} "
-                        f"{ic_sv:>8.4f} {ic_cv - ic_sv:>+10.4f}  "
-                        f"(cv {ic_cv:+.4f})"
-                    )
-
-        print(
-            "\nDA is quotable only beside down% and the PT test "
-            "(backend/AGENTS.md invariant 4). One anchor is one date: this "
-            "is a path check with a number attached, not an accuracy result."
-        )
-        return 0
-    finally:
-        db.close()
+    print(
+        "\nDA is quotable only beside down% and the PT test "
+        "(backend/AGENTS.md invariant 4). One anchor is one date: this "
+        "is a path check with a number attached, not an accuracy result."
+    )
+    return 0
 
 
 if __name__ == "__main__":

@@ -142,13 +142,13 @@ class TestConstructorValidation:
     @pytest.mark.parametrize("bad", [0.0, 1.0, -0.1, 2.0])
     def test_an_out_of_range_share_is_rejected_at_construction(self, bad):
         with pytest.raises(ValueError, match="served_cohort_share"):
-            ItemForecaster(db_session=None, served_cohort_share=bad)
+            ItemForecaster(served_cohort_share=bad)
 
     def test_none_is_the_default(self):
-        assert ItemForecaster(db_session=None).served_cohort_share is None
+        assert ItemForecaster().served_cohort_share is None
 
     def test_a_valid_share_is_stored(self):
-        f = ItemForecaster(db_session=None, served_cohort_share=0.5)
+        f = ItemForecaster(served_cohort_share=0.5)
         assert f.served_cohort_share == 0.5
 
 
@@ -195,7 +195,7 @@ class TestClassifierFitAcceptsTiers:
         tiers = (rng.random_sample(n) < 0.2).astype(int)
         y = np.where(tiers == 1, X[:, 0] * 10, rng.normal(0, 10, n))
 
-        f = ItemForecaster(db_session=None, served_cohort_share=0.5)
+        f = ItemForecaster(served_cohort_share=0.5)
         booster = f._fit_direction_classifier(
             X,
             y,
@@ -213,7 +213,7 @@ class TestClassifierFitAcceptsTiers:
         rng = np.random.RandomState(7)
         X = rng.normal(0, 1, (200, 3))
         y = rng.normal(0, 10, 200)
-        f = ItemForecaster(db_session=None, served_cohort_share=0.5)
+        f = ItemForecaster(served_cohort_share=0.5)
         booster = f._fit_direction_classifier(
             X,
             y,

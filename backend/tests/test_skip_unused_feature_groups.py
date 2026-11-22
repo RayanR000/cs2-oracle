@@ -15,13 +15,12 @@ The two constraints this file exists to pin:
 from __future__ import annotations
 
 import inspect
-from unittest.mock import MagicMock
 
 from models.forecaster import ItemForecaster
 
 
 def _f(tmp_path):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
 
 
 def test_default_is_off_so_harnesses_keep_the_full_frame(tmp_path):

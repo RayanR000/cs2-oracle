@@ -51,7 +51,7 @@ def test_direction_sample_weights_per_row_threshold():
 
 
 def test_label_vol_column_is_trailing_and_grouped():
-    fc = ItemForecaster(db_session=None)
+    fc = ItemForecaster()
     # two items; smooth-trend item -> low vol, noisy item -> higher vol
     n = 60
     dates = pd.date_range("2025-01-01", periods=n, freq="D")
@@ -89,7 +89,7 @@ def test_fit_classifier_signature_accepts_horizon_and_sigma():
 def test_fit_classifier_vol_scaling_changes_labels():
     # With a large per-row sigma, movers should collapse to flat, shrinking
     # the number of up/down training labels vs the fixed-0.5% baseline.
-    fc = ItemForecaster(db_session=None)
+    fc = ItemForecaster()
     rng = np.random.RandomState(0)
     pd.DataFrame({"f0": rng.randn(400), "f1": rng.randn(400)})
     y = rng.randn(400) * 2.0  # returns in percent, spread around 0

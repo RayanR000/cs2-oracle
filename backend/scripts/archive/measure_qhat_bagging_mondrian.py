@@ -388,7 +388,7 @@ def main() -> int:
     df = load_panel(path)
     floor, cap = sigma_bounds_for_panel(df)
     logger.info("sigma clip: floor=%.6f cap=%.6f (panel's own; read ratios, not levels)", floor, cap)
-    fc = ItemForecaster(db_session=None)
+    fc = ItemForecaster()
 
     rows = []
     for h in [int(x) for x in args.horizons.split(",")]:

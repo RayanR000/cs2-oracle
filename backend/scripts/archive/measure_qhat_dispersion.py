@@ -320,7 +320,7 @@ def main() -> int:
 
     db = readonly_session()
     try:
-        fc = ItemForecaster(db_session=db)
+        fc = ItemForecaster(serving_reads=True)
         df = fc.build_training_data(
             days_back=1460, backfilled_only=True, max_feature_rows=1_200_000, min_median_price=1.0, universe="train"
         )

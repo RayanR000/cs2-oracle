@@ -24,7 +24,7 @@ COL = "target_anomaly_7d"
 
 @pytest.fixture
 def forecaster():
-    return ItemForecaster(db_session=None)
+    return ItemForecaster()
 
 
 def _frame(n=120, seed=0, item="A"):

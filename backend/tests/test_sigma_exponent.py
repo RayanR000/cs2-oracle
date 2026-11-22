@@ -188,7 +188,7 @@ def test_serving_a_beta_qhat_at_the_wrong_exponent_is_catastrophic_not_subtle():
 
 
 def test_band_beta_defaults_to_neutral_for_a_pre_exponent_artifact():
-    fc = ItemForecaster(db_session=None)
+    fc = ItemForecaster()
     fc.conformal_calibration = {3: 95.0, 7: 141.0}
     fc.conformal_beta = {}
     for h in (3, 7, 14, 30):
@@ -196,7 +196,7 @@ def test_band_beta_defaults_to_neutral_for_a_pre_exponent_artifact():
 
 
 def test_band_beta_refuses_to_pass_a_nan_into_a_half_width():
-    fc = ItemForecaster(db_session=None)
+    fc = ItemForecaster()
     fc.conformal_beta = {3: float("nan"), 7: 0.37}
     assert fc.band_beta(3) == conformal.BETA_NEUTRAL
     assert fc.band_beta(7) == pytest.approx(0.37)
@@ -224,7 +224,7 @@ def test_load_round_trips_the_exponent(tmp_path):
     p.write_text(json.dumps(meta))
 
     loaded = {int(h): float(b) for h, b in json.loads(p.read_text()).get("conformal_beta", {}).items()}
-    fc = ItemForecaster(db_session=None)
+    fc = ItemForecaster()
     fc.conformal_beta = loaded
     assert fc.band_beta(3) == pytest.approx(0.4291)
     assert fc.band_beta(30) == pytest.approx(0.3641)

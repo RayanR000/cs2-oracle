@@ -16,7 +16,6 @@ composition. See docs/research/2026-08-07-cs2-forecasting-research.md 25.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
-from unittest.mock import MagicMock
 
 import duckdb
 import pandas as pd
@@ -136,7 +135,7 @@ def test_training_read_drops_them(tmp_path):
     """`_fetch_voted_price_history` is the one archive read behind both
     `train()` and `predict()`, so filtering there removes the names from the
     training universe *and* stops the product forecasting them."""
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path / "saved_models"))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path / "saved_models"))
     f.archive_dir = _archive(tmp_path, COLLAPSED + SINGLE_ASSET)
     f._now = lambda: datetime(2026, 7, 20, tzinfo=UTC)
 

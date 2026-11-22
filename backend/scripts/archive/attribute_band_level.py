@@ -668,7 +668,7 @@ def main() -> int:
     # `__init__`, not `__new__`: `prepare_targets` reports through
     # `self.label_voiding`, which only the constructor creates. `db_session=None`
     # is what the sibling instruments pass -- nothing here touches the DB.
-    fc = ItemForecaster(db_session=None)
+    fc = ItemForecaster()
 
     # Is sigma trending? If the calibration pool spans a calmer era than the anchors,
     # "which rows q_hat saw" is a time defect and not a cohort one -- and unlike the

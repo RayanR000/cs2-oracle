@@ -1713,7 +1713,7 @@ def run_backtest(types=None, min_price=0, update_bias=False, reresolve=False, re
             try:
                 from models.forecaster import ItemForecaster
 
-                forecaster = ItemForecaster(db_session=db)
+                forecaster = ItemForecaster(serving_reads=True)
                 forecaster.load_models()
                 forecaster.update_bias_corrections_from_outcomes()
                 logger.info("Bias corrections updated successfully")

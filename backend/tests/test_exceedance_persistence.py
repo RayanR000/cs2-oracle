@@ -9,8 +9,6 @@ dropped would mis-size the band. These guard the storage seam, not the offline A
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import numpy as np
 import pandas as pd
 from models.forecaster import ItemForecaster
@@ -19,7 +17,7 @@ from tests._source import method_closure_source
 
 
 def _forecaster(tmp_path):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
 
 
 def _trained_head(f, horizon=7):

@@ -1,5 +1,4 @@
 import inspect
-from unittest.mock import MagicMock
 
 import pytest
 from models.forecaster import ItemForecaster
@@ -7,7 +6,7 @@ from models.forecaster import ItemForecaster
 
 @pytest.fixture
 def fc(tmp_path):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
 
 
 def test_resolve_slugs_accepts_universe():

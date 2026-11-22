@@ -17,8 +17,6 @@ numpy path already produced, since `NaN > 0` is False.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -39,7 +37,7 @@ def _frame(volume) -> pd.DataFrame:
 
 @pytest.fixture
 def forecaster():
-    return ItemForecaster(db_session=MagicMock())
+    return ItemForecaster(serving_reads=True)
 
 
 def test_all_null_volume_does_not_crash(forecaster):

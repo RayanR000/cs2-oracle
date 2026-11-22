@@ -11,8 +11,6 @@ The production change that makes this fail if reverted: the label block appended
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import numpy as np
 import pandas as pd
 from models.forecaster import ItemForecaster
@@ -20,7 +18,7 @@ from models.forecaster import ItemForecaster
 
 def _forecaster(tmp_path):
     # Never the default model_dir — it clobbers gitignored production artifacts.
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
 
 
 def _frame():

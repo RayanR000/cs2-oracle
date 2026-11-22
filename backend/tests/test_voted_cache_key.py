@@ -12,7 +12,6 @@ import ast
 import inspect
 import os
 import textwrap
-from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -80,7 +79,7 @@ def test_fingerprint_survives_a_non_uniform_schema(tmp_path, archive):
 
 
 def _f(tmp_path, archive):
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.archive_dir = archive
     return f
 

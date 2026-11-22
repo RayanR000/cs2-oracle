@@ -334,7 +334,7 @@ def main() -> int:
     else:
         logger.warning("no distinct served-side panel; the direct leg is skipped")
 
-    fc = ItemForecaster(db_session=None)
+    fc = ItemForecaster()
     rows: list[dict] = []
     horizons = [int(x) for x in args.horizons.split(",")]
 

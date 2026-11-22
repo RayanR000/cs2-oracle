@@ -171,7 +171,7 @@ def run(horizon_filter=None, out_path=None):
     n_jobs = max(1, (os.cpu_count() or 4) // 2)
     db = SessionLocal()
     try:
-        forecaster = ItemForecaster(db_session=db)
+        forecaster = ItemForecaster(serving_reads=True)
         logger.info("Building training data (production pipeline)...")
         t0 = time.time()
         df = forecaster.build_training_data(

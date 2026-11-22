@@ -10,7 +10,6 @@ calibrated on a model nobody served (performance review 2026-10-08).
 from __future__ import annotations
 
 from datetime import date, timedelta
-from unittest.mock import MagicMock
 
 import lightgbm as lgb
 import models.forecaster as fc
@@ -28,7 +27,7 @@ def _ml_heads_off(monkeypatch):
 
 
 def _forecaster(tmp_path):
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.QUANTILES = [0.5]
     f.feature_cols = ["feat_a"]
     f.CV_MIN_TRAIN_DAYS = 40

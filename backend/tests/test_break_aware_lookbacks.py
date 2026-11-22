@@ -64,7 +64,7 @@ def test_table_covers_every_price_technical_engineer_features_emits():
             p *= 1 + rng.normal(0, 0.02)
             ts = pd.Timestamp("2025-01-01") + pd.Timedelta(days=k)
             rows.append({"item_id": f"i{i}", "date": ts.date(), "timestamp": ts, "price": p, "volume": 5.0})
-    fc = ItemForecaster(db_session=None, model_dir=tempfile.mkdtemp())
+    fc = ItemForecaster(model_dir=tempfile.mkdtemp())
     events = pd.DataFrame(columns=["id", "type", "timestamp", "description"])
     out = fc.engineer_features(pd.DataFrame(rows), events, skip_unused_groups=True)
     emitted = {c for c in out.columns if _feature_group(c) == "price_technicals"}
@@ -79,23 +79,22 @@ def test_flag_defaults_off(monkeypatch):
 
 def test_serving_follows_the_artifact(tmp_path, monkeypatch):
     monkeypatch.setenv("BREAK_AWARE_LOOKBACKS", "1")
-    fc = ItemForecaster(db_session=None, model_dir=str(tmp_path))
+    fc = ItemForecaster(model_dir=str(tmp_path))
     fc._artifact_break_aware_lookbacks = False
     assert fc._break_aware_lookbacks_served() is False
 
 
 def test_flag_round_trips_through_meta_json(tmp_path, monkeypatch):
-    from unittest.mock import MagicMock
 
     monkeypatch.setenv("BREAK_AWARE_LOOKBACKS", "1")
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.feature_cols = ["a"]
     f.feature_medians = pd.Series({"a": 0.0})
     f.conformal_calibration = {h: 1.0 for h in f.HORIZONS}
     f.save_models()
     assert json.loads((tmp_path / "meta.json").read_text())["break_aware_lookbacks"] is True
     monkeypatch.delenv("BREAK_AWARE_LOOKBACKS")
-    g = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    g = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     g.load_models()
     assert g._break_aware_lookbacks_served() is True
 
@@ -106,7 +105,7 @@ def test_train_and_predict_both_apply_the_mask():
 
 
 def test_predict_on_a_cache_hit_uses_the_artifact_calendar(tmp_path):
-    fc = ItemForecaster(db_session=None, model_dir=str(tmp_path))
+    fc = ItemForecaster(model_dir=str(tmp_path))
     fc._artifact_break_aware_lookbacks = True
     fc._artifact_break_dates = frozenset({B})
     fc.break_dates = None  # cache hit: no fetch ran
@@ -117,7 +116,7 @@ def test_predict_on_a_cache_hit_uses_the_artifact_calendar(tmp_path):
 
 def test_mask_off_touches_nothing(tmp_path, monkeypatch):
     monkeypatch.delenv("BREAK_AWARE_LOOKBACKS", raising=False)
-    fc = ItemForecaster(db_session=None, model_dir=str(tmp_path))
+    fc = ItemForecaster(model_dir=str(tmp_path))
     fc.break_dates = frozenset({B})
     df = _rows([0, 1])
     fc._apply_break_mask(df, ["return_7d"], served=False)

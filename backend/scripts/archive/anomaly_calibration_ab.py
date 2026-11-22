@@ -120,7 +120,7 @@ def run(df, pruned, horizon_filter=30, n_jobs=None, clean_label=False, calib_fra
     eval_items, train_items, trained_eval = assign_items(df)
 
     db = SessionLocal()
-    forecaster = ItemForecaster(db_session=db)
+    forecaster = ItemForecaster(serving_reads=True)
     if not forecaster.anomaly_gbm_enabled():
         raise SystemExit("ANOMALY_GBM did not take effect — no labels to score.")
     try:

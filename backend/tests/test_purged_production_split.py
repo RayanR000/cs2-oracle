@@ -14,7 +14,6 @@ point were all selected against partly-seen labels.
 """
 
 from datetime import timedelta
-from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -24,7 +23,7 @@ from models.forecaster import ItemForecaster, embargo_days
 @pytest.fixture
 def forecaster(tmp_path_factory):
     return ItemForecaster(
-        db_session=MagicMock(),
+        serving_reads=True,
         model_dir=str(tmp_path_factory.mktemp("saved_models")),
     )
 

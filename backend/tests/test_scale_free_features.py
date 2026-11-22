@@ -26,7 +26,6 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from typing import ClassVar
-from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -40,7 +39,7 @@ pytestmark = pytest.mark.slow
 
 @pytest.fixture
 def forecaster(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 def _series(n_items=2, n_days=400, scale=1.0, start=date(2024, 1, 1)):

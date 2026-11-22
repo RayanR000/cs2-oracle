@@ -100,7 +100,7 @@ def run(df, pruned, horizon_filter=7, n_jobs=None, calib_frac=0.25, max_folds=No
     eval_items, train_items, trained_eval = assign_items(df)
 
     db = SessionLocal()
-    forecaster = ItemForecaster(db_session=db)
+    forecaster = ItemForecaster(serving_reads=True)
     try:
         horizons = [h for h in ItemForecaster.HORIZONS if horizon_filter is None or h == horizon_filter]
         results = {}

@@ -4,8 +4,6 @@
 request them by name in their function signature.
 """
 
-from unittest.mock import MagicMock
-
 import pytest
 from database import Base
 from models.forecaster import ItemForecaster
@@ -74,7 +72,7 @@ def mock_forecaster(tmp_path):
     never clobber the real ``models/saved_models/`` directory.
     """
     return ItemForecaster(
-        db_session=MagicMock(),
+        serving_reads=True,
         model_dir=str(tmp_path / "saved_models"),
     )
 

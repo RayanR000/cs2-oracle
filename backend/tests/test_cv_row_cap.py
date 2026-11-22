@@ -12,7 +12,7 @@ q_hat, mean_rank_ic and the PT statistic.
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -28,7 +28,7 @@ def _disable_ml_heads(monkeypatch):
 
 
 def _forecaster(tmp_path, feature_cols):
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path))
     f.QUANTILES = [0.5]
     f.feature_cols = list(feature_cols)
     f.CV_MIN_TRAIN_DAYS = 40

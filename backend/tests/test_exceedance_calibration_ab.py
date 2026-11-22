@@ -90,7 +90,7 @@ def test_clip_matches_what_exceedance_probability_serves():
         def predict(self, X):
             return np.array([-1.0, 0.0, 0.5, 1.0, 2.0])
 
-    f = ItemForecaster(db_session=None)
+    f = ItemForecaster()
     f.exceedance_models = {7: _Head()}
     f.feature_medians = pd.Series(dtype=float)
     served = f.exceedance_probability(7, pd.DataFrame({"f": [0.0] * 5}))

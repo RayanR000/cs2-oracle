@@ -20,7 +20,6 @@ See docs/changelog/2026-08-06-steam-listing-backfill-and-phantom-items.md.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
-from unittest.mock import MagicMock
 
 import duckdb
 import pandas as pd
@@ -143,7 +142,7 @@ def test_training_read_drops_the_phantom_and_keeps_the_twin(tmp_path):
     series from the training universe without losing the item: every phantom
     has a correctly-keyed twin, which is why this is a de-duplication and not a
     universe reduction."""
-    f = ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path / "saved_models"))
+    f = ItemForecaster(serving_reads=True, model_dir=str(tmp_path / "saved_models"))
     f.archive_dir = _archive(tmp_path, PHANTOM + REAL)
     f._now = lambda: datetime(2026, 7, 20, tzinfo=UTC)
 

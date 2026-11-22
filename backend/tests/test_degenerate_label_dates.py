@@ -29,7 +29,6 @@ Two distinct archive defects, measured 2026-08-06 over all 4,735 archive days:
 from __future__ import annotations
 
 from datetime import date, timedelta
-from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -39,7 +38,7 @@ from models.forecaster import ItemForecaster
 
 @pytest.fixture
 def forecaster(tmp_path_factory):
-    return ItemForecaster(db_session=MagicMock(), model_dir=str(tmp_path_factory.mktemp("saved_models")))
+    return ItemForecaster(serving_reads=True, model_dir=str(tmp_path_factory.mktemp("saved_models")))
 
 
 def _panel(n_items=50, n_days=60, start=date(2026, 1, 1)):
