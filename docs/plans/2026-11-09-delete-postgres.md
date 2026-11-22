@@ -31,8 +31,13 @@ Files: `collectors/pipeline.py`, `scripts/run_task.py`, tests.
 
 1. `collection_runs`: drop the `CollectionRun` insert (success and failure paths, L506-530 and L597-612)
    and keep the Parquet write, which is already first-class. Remove the read-only branch there.
+   **Amended 2026-11-22: the Parquet write was not durable** (CI wrote it to a discarded runner
+   dir; the data repo copy stops at 2026-08-09), so both writes are deleted. See
+   `changelog/2026-11-22-run-records-and-fallback-deleted.md`.
 2. Delete `_load_latest_prices`, `_load_latest_non_aggregator_prices`, `_latest_per_item`,
    `_split_fresh_and_stale` and the fallback block (spec Q3). Drop `FALLBACK_MAX_AGE_DAYS`.
+   **Amended 2026-11-22: `FALLBACK_MAX_AGE_DAYS` stays** — `backtest/price_resolution.py` and
+   `models/staleness.py` derive their windows from it.
 3. Tests: the pipeline tests that assert a `CollectionRun` row now assert the Parquet row.
 
 ## PR 2b: the aggregator's catalog comes from `items.parquet` (found 2026-11-09, not in the spec)

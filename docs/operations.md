@@ -106,22 +106,10 @@ freshness query below.
 
 ### Verify data collection
 
-Run this in Supabase SQL Editor:
-
-```sql
-SELECT
-    started_at,
-    finished_at,
-    status,
-    total_items,
-    successful,
-    failed,
-    duration_seconds
-FROM collection_runs
-WHERE started_at > now() - interval '7 days'
-ORDER BY started_at DESC
-LIMIT 20;
-```
+`collection_runs` is no longer written (Phase 4, 2026-11-22). The Aggregator run's log
+artifact (`aggregator-logs-<run id>`) carries the counts; `✅ Collection complete: N/M items`
+is the line to read, and `scripts/run_task.py` already fails the run when every count is zero.
+For the data itself, check the newest `day` in `prices-YYYY-MM.parquet` on `cs2-oracle-data`.
 
 ### Verify output-table freshness (do this instead of trusting a green run)
 

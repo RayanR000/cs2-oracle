@@ -21,7 +21,7 @@ and whether that row exists for the expected date:
 
 | Leg | Evidence of success |
 |---|---|
-| Aggregator | a new day in `price-archive/prices-YYYY-MM.parquet`, and a `collection_runs` row with non-zero counts |
+| Aggregator | a new day in `price-archive/prices-YYYY-MM.parquet`, and non-zero `items_collected` in the run's log artifact (`collection_runs` is no longer written since Phase 4) |
 | Price Forecast | today's rows in **both** `ops/item_forecasts.parquet` and the DB — `scripts/check_forecast_freshness.py` exists precisely for this and checks both, because the API reads the Parquet mirror first and falls back to the DB, so a DB row without a mirror row serves nothing |
 | Backtest | a fresh `ops/prediction_accuracy.parquet` row for the expected evaluation date |
 

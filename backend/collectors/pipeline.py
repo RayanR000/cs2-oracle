@@ -7,10 +7,8 @@ import csv
 import logging
 import os
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
-
-from sqlalchemy.orm import scoped_session
 
 from collectors.snapshot_date import resolve_snapshot_date
 
@@ -25,14 +23,14 @@ QUALITY_SUFFIXES = (
 )
 SPECIAL_PREFIXES = ("StatTrak", "Souvenir")
 
-# The historical fallback re-emits an old price stamped `timestamp=now`, so an
-# uncapped lookup launders stale data into the current day. This was uncapped
-# until 2026-07-31, and prod `price_history` has been frozen since 2026-07-11
-# (daily data now goes only to CSV → Parquet). A total upstream outage would
-# therefore have written ~5.5K items' worth of 20-day-old prices as if current —
-# and kept `items_collected` non-zero, hiding the outage from the zero-row guard
-# in scripts/run_task.py. Prices older than this are dropped and counted as
-# errors instead, so the run reports the outage rather than papering over it.
+# The oldest price that may stand in for today's. It capped the historical
+# fallback that recovered an item missing from the day's scrape out of Postgres
+# `price_history`; that fallback was deleted in Phase 4 (the table has been
+# frozen since 2026-07-11, so it recovered nothing — every lookup was stale).
+# The constant stays because the backtest's resolution window
+# (backtest/price_resolution.py::MAX_WINDOW_SPAN_DAYS) and the frozen-run gap
+# (models/staleness.py::STALE_RUN_GAP_BREAK_DAYS) are derived from it, and the
+# archive still holds the `historical_fallback:` rows it once wrote.
 FALLBACK_MAX_AGE_DAYS = int(os.environ.get("FALLBACK_MAX_AGE_DAYS", "7"))
 
 # `None` -> csv.writer emits an empty field -> pandas reads NaN -> the archive
@@ -51,13 +49,6 @@ FALLBACK_MAX_AGE_DAYS = int(os.environ.get("FALLBACK_MAX_AGE_DAYS", "7"))
 VOLUME_NOT_OBSERVED = None
 
 
-def _historical_fallback_source(source: str) -> str:
-    """Normalize fallback source labels so retries do not stack prefixes."""
-    while source.startswith("historical_fallback:"):
-        source = source[len("historical_fallback:") :]
-    return f"historical_fallback:{source}"
-
-
 class DataPipeline:
     """Orchestrates data collection and processing pipeline"""
 
@@ -70,14 +61,6 @@ class DataPipeline:
         """
         self.db_session = db_session
 
-    def _ensure_session(self):
-        """Return a thread-safe session. Creates a thread-local one if none was injected."""
-        if self.db_session is None:
-            from database import SessionLocal
-
-            self.db_session = scoped_session(SessionLocal)
-        return self.db_session
-
     def run_priority_collection(self):
         """Execute priority collection for top 2000 items using fast aggregator"""
         return self.run_full_aggregator_collection(limit=2000)
@@ -86,16 +69,15 @@ class DataPipeline:
         """
         Execute collection for items using fast aggregator.
         If limit is None, updates ALL items in the database.
-        Records execution to collection_runs table for monitoring.
+        The run is recorded by the returned counts, the log and the Actions run
+        itself; the `collection_runs` table is no longer written (Phase 4).
         """
-        from database import CollectionRun, Item
+        from database import Item
 
         from collectors.csgotrader_aggregator import CSGOTraderAggregator
 
         start_time = datetime.utcnow()
         primary_items_collected = 0
-        fallback_items_collected = 0
-        fallback_stale_items: set = set()
         errors_count = 0
         duplicate_name_count = 0
         duplicate_name_sample: list[str] = []
@@ -201,69 +183,8 @@ class DataPipeline:
                     errors_count += len(matched_items)
                     missing_names.append(name)
 
-            if missing_names:
-                fallback_cutoff = now - timedelta(days=FALLBACK_MAX_AGE_DAYS)
-                missing_item_ids = {item.id for missing_name in missing_names for item in item_map[missing_name]}
-                non_aggregator_prices, stale_non_aggregator = self._load_latest_non_aggregator_prices(
-                    missing_item_ids, cutoff=fallback_cutoff
-                )
-                latest_any_source_prices, stale_any_source = self._load_latest_prices(
-                    missing_item_ids, cutoff=fallback_cutoff
-                )
-                # Stale only where *neither* loader found anything fresh.
-                fallback_stale_items = (stale_non_aggregator | stale_any_source) - (
-                    set(non_aggregator_prices) | set(latest_any_source_prices)
-                )
-                still_missing_names = []
-
-                for name in missing_names:
-                    matched_items = item_map[name]
-                    recovered_row = next(
-                        (
-                            non_aggregator_prices.get(item.id)
-                            for item in matched_items
-                            if non_aggregator_prices.get(item.id) is not None
-                        ),
-                        None,
-                    )
-                    if recovered_row is None:
-                        recovered_row = next(
-                            (
-                                latest_any_source_prices.get(item.id)
-                                for item in matched_items
-                                if latest_any_source_prices.get(item.id) is not None
-                            ),
-                            None,
-                        )
-
-                    if recovered_row is None:
-                        still_missing_names.append(name)
-                        continue
-
-                    for item in matched_items:
-                        price_records.append(
-                            {
-                                "item_id": item.id,
-                                "timestamp": now,
-                                "price": recovered_row.price,
-                                "volume": recovered_row.volume,
-                                "source": _historical_fallback_source(recovered_row.source),
-                            }
-                        )
-                        fallback_items_collected += 1
-
-                missing_names = still_missing_names
-                errors_count = sum(len(item_map[name]) for name in missing_names)
-
-                if fallback_stale_items:
-                    logger.warning(
-                        "Historical fallback declined %s items: newest price is "
-                        "older than the %s-day cap (cutoff %s). These count as "
-                        "errors rather than being re-stamped as today's price.",
-                        len(fallback_stale_items),
-                        FALLBACK_MAX_AGE_DAYS,
-                        fallback_cutoff.isoformat(timespec="seconds"),
-                    )
+            # An item missing from the day's dumps stays missing and counts as an
+            # error. There is no historical fallback any more (see FALLBACK_MAX_AGE_DAYS).
 
             # 4. Save prices
             backfilled_csv_path = None
@@ -453,11 +374,6 @@ class DataPipeline:
                         "Souvenir Charm source-key diagnostics: %s",
                         souvenir_charm_diagnostics,
                     )
-            elif fallback_items_collected:
-                logger.info(
-                    "Recovered %s items from historical fallback sources",
-                    fallback_items_collected,
-                )
 
             # 4b. Add newly released items to the catalog (collectors/new_item_discovery.py).
             # After the prices are saved and isolated from them: a failure here must
@@ -477,82 +393,9 @@ class DataPipeline:
                     self.db_session.rollback()
                     logger.warning("New-item discovery failed (collection unaffected): %s", disc_err)
 
-            # 5. Record collection run for monitoring
-            end_time = datetime.utcnow()
-            duration_seconds = (end_time - start_time).total_seconds()
-            total_collected = primary_items_collected + fallback_items_collected
-
-            # NOTE: do not add keys here. collection_runs.parquet types
-            # source_breakdown as a fixed STRUCT, and an unknown key makes the
-            # append fail its cast — swallowed by the `except` below, so the
-            # Parquet copy would silently stop updating. Stale-fallback counts
-            # go in the returned dict and the log line instead.
-            source_counts = Counter(r["source"] for r in price_records)
-            source_breakdown = {
-                "aggregator": primary_items_collected,
-                "historical_fallback": fallback_items_collected,
-                "aggregator_steam_7d": source_counts.get("aggregator_steam_7d", 0),
-                "aggregator_steam_30d": source_counts.get("aggregator_steam_30d", 0),
-                "aggregator_steam_90d": source_counts.get("aggregator_steam_90d", 0),
-                "aggregator_skinport": source_counts.get("aggregator_skinport", 0),
-                "aggregator_buff163": source_counts.get("aggregator_buff163", 0),
-                "aggregator_buff163_buy": source_counts.get("aggregator_buff163_buy", 0),
-                "aggregator_csfloat": source_counts.get("aggregator_csfloat", 0),
-                "aggregator_csmoney": source_counts.get("aggregator_csmoney", 0),
-                "aggregator_csgotrader": source_counts.get("aggregator_csgotrader", 0),
-                "aggregator_youpin": source_counts.get("aggregator_youpin", 0),
-            }
-
-            collection_run = CollectionRun(
-                started_at=start_time,
-                finished_at=end_time,
-                status="completed",
-                total_items=len(items),
-                successful=total_collected,
-                failed=errors_count,
-                duration_seconds=duration_seconds,
-                source_breakdown=source_breakdown,
-            )
-            self.db_session.add(collection_run)
-            try:
-                self.db_session.commit()
-            except Exception as commit_err:
-                # A read-only Postgres must not fail the run: the prices are already
-                # in Parquet, and Price Forecast only runs on an Aggregator success
-                # (db/read_only.py). The Parquet row below keeps a NULL id.
-                from db.read_only import is_read_only_error, report_read_only
-
-                if not is_read_only_error(commit_err):
-                    raise
-                self.db_session.rollback()
-                report_read_only("the collection_runs insert")
-                collection_run.id = None
-
-            try:
-                import json
-
-                from db.parquet import append_table
-
-                append_table(
-                    "collection_runs",
-                    [
-                        {
-                            "id": collection_run.id,
-                            "started_at": start_time,
-                            "finished_at": end_time,
-                            "status": "completed",
-                            "total_items": len(items),
-                            "successful": total_collected,
-                            "failed": errors_count,
-                            "duration_seconds": duration_seconds,
-                            "error_message": None,
-                            "source_breakdown": json.dumps(source_breakdown),
-                        }
-                    ],
-                    ["id"],
-                )
-            except Exception as pq_err:
-                logger.warning("Parquet write for collection_runs failed: %s", pq_err)
+            # 5. Summarise the run (the returned counts are the record)
+            duration_seconds = (datetime.utcnow() - start_time).total_seconds()
+            total_collected = primary_items_collected
 
             if total_collected == 0:
                 logger.error(
@@ -565,8 +408,6 @@ class DataPipeline:
                 "items_collected": total_collected,
                 "total_items": len(items),
                 "errors": errors_count,
-                "fallback_items_collected": fallback_items_collected,
-                "fallback_stale_declined": len(fallback_stale_items),
                 "new_items_discovered": new_items_discovered,
                 "duplicate_names": duplicate_name_count,
                 "duplicate_name_sample": duplicate_name_sample,
@@ -587,158 +428,10 @@ class DataPipeline:
             if self.db_session:
                 self.db_session.rollback()
 
-            end_time = datetime.utcnow()
-            duration_seconds = (end_time - start_time).total_seconds()
-
-            # Try to record failed run
-            error_text = str(e)[:1000]
-            failed_run_id = None
-            try:
-                from database import CollectionRun
-
-                failed_run = CollectionRun(
-                    started_at=start_time,
-                    finished_at=end_time,
-                    status="failed",
-                    total_items=0,
-                    successful=0,
-                    failed=1,
-                    duration_seconds=duration_seconds,
-                    error_message=error_text,
-                )
-                # discard the failed transaction so this insert can commit
-                self.db_session.rollback()
-                self.db_session.add(failed_run)
-                self.db_session.commit()
-                failed_run_id = failed_run.id
-            except Exception as record_error:
-                logger.error(f"Could not record failed run: {record_error}")
-
-            try:
-                import json
-
-                from db.parquet import append_table
-
-                append_table(
-                    "collection_runs",
-                    [
-                        {
-                            "id": failed_run_id,
-                            "started_at": start_time,
-                            "finished_at": end_time,
-                            "status": "failed",
-                            "total_items": 0,
-                            "successful": 0,
-                            "failed": 1,
-                            "duration_seconds": duration_seconds,
-                            "error_message": error_text,
-                            "source_breakdown": None,
-                        }
-                    ],
-                    ["id"],
-                )
-            except Exception as pq_err:
-                logger.warning("Parquet write for collection_runs (failed) failed: %s", pq_err)
+            duration_seconds = (datetime.utcnow() - start_time).total_seconds()
 
             logger.error(f"❌ Aggregator collection failed: {e}", exc_info=True)
             return {"status": "failed", "error": str(e), "duration_seconds": duration_seconds}
-
-    def _load_latest_non_aggregator_prices(self, item_ids, cutoff=None):
-        """Load the latest non-primary price snapshot for each exact item id.
-
-        Returns (fresh_by_item_id, stale_item_ids). When `cutoff` is given, an
-        item whose newest snapshot predates it is reported as stale rather than
-        recovered — see FALLBACK_MAX_AGE_DAYS.
-        """
-        from database import PriceHistory
-
-        if not item_ids:
-            return {}, set()
-
-        rows = self._latest_per_item(
-            item_ids,
-            extra_filters=[
-                PriceHistory.source != "aggregator_sync",
-            ],
-        )
-
-        return self._split_fresh_and_stale(rows, cutoff)
-
-    def _load_latest_prices(self, item_ids, cutoff=None):
-        """Load the latest price snapshot for each exact item id from any source.
-
-        Returns (fresh_by_item_id, stale_item_ids); see
-        `_load_latest_non_aggregator_prices`.
-        """
-        if not item_ids:
-            return {}, set()
-
-        rows = self._latest_per_item(item_ids, extra_filters=[])
-
-        return self._split_fresh_and_stale(rows, cutoff)
-
-    def _latest_per_item(self, item_ids, extra_filters):
-        """Return the single newest PriceHistory row per item_id.
-
-        Uses ``DISTINCT ON`` on Postgres (index-friendly, single pass) and
-        falls back to the original fetch-all-then-dedup on SQLite (test-only).
-        Both return ORM-mapped objects so callers and ``_split_fresh_and_stale``
-        are unchanged.
-        """
-        from database import PriceHistory
-
-        session = self._ensure_session()
-        dialect = session.bind.dialect.name
-
-        base_filters = [
-            PriceHistory.item_id.in_(item_ids),
-            ~PriceHistory.source.like("synthetic_demo"),
-            ~PriceHistory.source.like("historical_fallback:%"),
-        ]
-        all_filters = base_filters + list(extra_filters)
-
-        order_cols = [
-            PriceHistory.timestamp.desc(),
-            PriceHistory.created_at.desc().nullslast(),
-            PriceHistory.source.desc(),
-        ]
-
-        if dialect == "postgresql":
-            # DISTINCT ON picks the first row per item_id in ORDER BY order.
-            rows = (
-                session.query(PriceHistory)
-                .distinct(PriceHistory.item_id)
-                .filter(*all_filters)
-                .order_by(PriceHistory.item_id, *order_cols)
-                .all()
-            )
-        else:
-            # SQLite (tests): fetch all ordered rows; _split_fresh_and_stale
-            # already picks the first per item_id.
-            rows = session.query(PriceHistory).filter(*all_filters).order_by(PriceHistory.item_id, *order_cols).all()
-
-        return rows
-
-    @staticmethod
-    def _split_fresh_and_stale(rows, cutoff=None):
-        """Pick the newest row per item, separating fresh from too-old.
-
-        `rows` must already be ordered newest-first within each item_id, so the
-        first row seen for an item decides both its price and its freshness: if
-        the newest snapshot is stale, every older one is too.
-        """
-        fresh_by_item_id = {}
-        stale_item_ids = set()
-
-        for row in rows:
-            if row.item_id in fresh_by_item_id or row.item_id in stale_item_ids:
-                continue
-            if cutoff is not None and row.timestamp is not None and row.timestamp < cutoff:
-                stale_item_ids.add(row.item_id)
-                continue
-            fresh_by_item_id[row.item_id] = row
-
-        return fresh_by_item_id, stale_item_ids
 
     @staticmethod
     def _classify_missing_name(name: str, matched_items: list[Any]) -> str:
