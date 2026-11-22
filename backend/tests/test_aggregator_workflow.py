@@ -71,10 +71,10 @@ class TestHappyPath:
       1. run_task.py aggregate
       2. DataPipeline.run_full_aggregator_collection()
       3. CSGOTraderAggregator.collect_batch_items()
-      4. DB insert into price_history + recording CollectionRun
+      4. snapshot CSV for the Parquet archive (no Postgres run record since Phase 4)
     """
 
-    def test_full_workflow_collects_items_and_records_run(self, monkeypatch):
+    def test_full_workflow_collects_items_without_a_run_record(self, monkeypatch):
         db = database_module.SessionLocal()
         try:
             items = seed_items(
@@ -120,11 +120,8 @@ class TestHappyPath:
             assert result["total_items"] == len(items)
             assert result["errors"] >= 0
 
-            run_record = db.query(CollectionRun).order_by(CollectionRun.id.desc()).first()
-            assert run_record is not None
-            assert run_record.status == "completed"
-            assert run_record.total_items == len(items)
-            assert run_record.duration_seconds > 0
+            assert result["duration_seconds"] > 0
+            assert db.query(CollectionRun).count() == 0, "collection_runs is no longer written"
         finally:
             db.close()
 
@@ -199,9 +196,9 @@ class TestHappyPath:
         finally:
             db.close()
 
-    def test_missing_item_falls_back_to_historical_price(self, monkeypatch):
-        """When the aggregator cannot match an item, the pipeline
-        recovers from the last non-aggregator price history."""
+    def test_missing_item_counts_as_an_error(self, monkeypatch):
+        """An item the aggregator cannot match is an error; the old
+        `price_history` fallback is gone, so a fresh row there does not count."""
         db = database_module.SessionLocal()
         try:
             [item] = seed_items(
@@ -236,8 +233,8 @@ class TestHappyPath:
             result = pipeline.run_full_aggregator_collection()
 
             assert result["status"] == "success"
-            assert result["items_collected"] == 1
-            assert result["errors"] == 0
+            assert result["items_collected"] == 0
+            assert result["errors"] == 1
         finally:
             db.close()
 
@@ -259,9 +256,9 @@ class TestHappyPath:
         finally:
             db.close()
 
-    def test_aggregator_exception_records_failed_run(self, monkeypatch):
-        """If the aggregator raises during collection, a failed
-        CollectionRun is recorded."""
+    def test_aggregator_exception_fails_the_run(self, monkeypatch):
+        """If the aggregator raises during collection, the run reports failure
+        (run_task exits non-zero on it) and writes no run record."""
         db = database_module.SessionLocal()
         try:
             [_item] = seed_items(
@@ -290,10 +287,8 @@ class TestHappyPath:
             assert result["status"] == "failed"
             assert "simulated network failure" in result["error"]
 
-            failed_run = db.query(CollectionRun).order_by(CollectionRun.id.desc()).first()
-            assert failed_run is not None
-            assert failed_run.status == "failed"
-            assert failed_run.error_message is not None
+            assert result["duration_seconds"] >= 0
+            assert db.query(CollectionRun).count() == 0
         finally:
             db.close()
 
