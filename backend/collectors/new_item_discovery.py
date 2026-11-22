@@ -40,7 +40,6 @@ from functools import cache
 from pathlib import Path
 
 from models.item_parser import is_phantom_slug, is_phase_collapsed, parse_item_name
-from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -125,9 +124,10 @@ def _partition_catalog(ops_root) -> list:
         return []
 
 
-def _write_partitions_only(rows: list[dict], ops_root, existing: list) -> None:
-    """A night Postgres cannot take the insert: the rows go to ``items.parquet`` alone, with ids
-    from ``max(id, READ_ONLY_ID_BASE) + 1`` so they can never collide with a Postgres id."""
+def _write_partitions(rows: list[dict], ops_root, existing: list) -> None:
+    """New items go to ``items.parquet``, the catalog's only store since Phase 4 (PR 2b). Ids run
+    from ``max(id, READ_ONLY_ID_BASE) + 1``, the space read-only nights already used, so they can
+    never collide with an id Postgres issued."""
     import pandas as pd
     from db import ops_partitions
 
@@ -137,17 +137,17 @@ def _write_partitions_only(rows: list[dict], ops_root, existing: list) -> None:
     ops_partitions.upsert("items", frame, root=ops_root)
 
 
-def discover_new_items(session, raw_sources: dict[str, dict], snapshot_day: date, ops_root=None) -> int:
-    """Insert newly released items. Returns how many were inserted.
+def discover_new_items(raw_sources: dict[str, dict], snapshot_day: date, ops_root=None, catalog=None) -> int:
+    """Add newly released items to ``items.parquet``. Returns how many were added.
 
-    *ops_root*: the data checkout's ops dir (``AGGREGATOR_OPS_DIR``). Its ``items.parquet`` joins
-    the known set, and when Postgres cannot take the insert (read-only or out of disk) the rows
-    land there instead. Without it a refused insert inserts nothing."""
+    *ops_root*: the ops dir holding ``items.parquet`` (the Aggregator passes the data checkout's,
+    ``AGGREGATOR_OPS_DIR``; None means ``db.parquet.OPS_DIR``). *catalog*: its rows, if the caller
+    already read them; read here otherwise."""
     if not raw_sources:
         return 0
+    existing = list(catalog) if catalog is not None else _partition_catalog(ops_root)
     known: set[str] = set()
-    partition_rows = _partition_catalog(ops_root) if ops_root is not None else []
-    for r in [*session.execute(text("SELECT name, item_id FROM items")).fetchall(), *partition_rows]:
+    for r in existing:
         known.add(r.name)
         known.add(r.item_id)
     new = find_new_items(raw_sources, known, snapshot_day)
@@ -176,29 +176,7 @@ def discover_new_items(session, raw_sources: dict[str, dict], snapshot_day: date
         }
         for name, d in new
     ]
-    try:
-        session.execute(
-            text(
-                "INSERT INTO items (item_id, name, type, release_date, created_at, updated_at, "
-                "is_backfilled, is_trainable) "
-                "VALUES (:item_id, :name, :type, :release_date, :now, :now, :is_backfilled, 0)"
-            ),
-            rows,
-        )
-        session.commit()
-        # A row Postgres took reaches the partitions through the nightly items sync
-        # (aggregator-update.yml, scripts/ops_sync_from_postgres.py --tables items).
-    except Exception as e:
-        from db.read_only import is_unwritable_error, report_read_only
-
-        session.rollback()
-        if not is_unwritable_error(e):
-            raise
-        if ops_root is None:
-            report_read_only("the new-item insert (no AGGREGATOR_OPS_DIR, so nothing was inserted)")
-            return 0
-        report_read_only("the new-item insert; the rows went to ops/items.parquet")
-        _write_partitions_only(rows, ops_root, partition_rows)
+    _write_partitions(rows, ops_root, existing)
     logger.info(
         "New-item discovery: inserted %s items (%s from the 2026-07-08 seed, %s new this run). Sample: %s",
         len(new),

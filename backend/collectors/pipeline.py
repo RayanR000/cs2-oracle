@@ -52,28 +52,29 @@ VOLUME_NOT_OBSERVED = None
 class DataPipeline:
     """Orchestrates data collection and processing pipeline"""
 
-    def __init__(self, db_session=None):
-        """
-        Initialize data pipeline
+    def __init__(self, ops_root=None):
+        """*ops_root*: the ops dir holding ``items.parquet``. The Aggregator passes the data
+        checkout's (``AGGREGATOR_OPS_DIR``); None means ``db.parquet.OPS_DIR``."""
+        self.ops_root = ops_root
 
-        Args:
-            db_session: SQLAlchemy database session
-        """
-        self.db_session = db_session
+    def load_catalog(self) -> list:
+        """Every catalog item from ``items.parquet`` (id, slug, name, type, is_backfilled).
 
-    def run_priority_collection(self):
-        """Execute priority collection for top 2000 items using fast aggregator"""
-        return self.run_full_aggregator_collection(limit=2000)
-
-    def run_full_aggregator_collection(self, limit: int | None = None):
+        The catalog has no other source since Phase 4 (PR 2b): Postgres ``items`` stopped taking
+        writes on 2026-10-30, and the nightly sync had already copied all of it here. A missing
+        file raises ``ops_store.MissingTable`` rather than collecting nothing.
         """
-        Execute collection for items using fast aggregator.
-        If limit is None, updates ALL items in the database.
+        from db import ops_store
+
+        read = ops_store.reader(("items",), root=self.ops_root)
+        return read("SELECT id, item_id, name, type, is_backfilled FROM items ORDER BY id")
+
+    def run_full_aggregator_collection(self):
+        """
+        Collect today's prices for every catalog item using the fast aggregator.
         The run is recorded by the returned counts, the log and the Actions run
         itself; the `collection_runs` table is no longer written (Phase 4).
         """
-        from database import Item
-
         from collectors.csgotrader_aggregator import CSGOTraderAggregator
 
         start_time = datetime.utcnow()
@@ -85,21 +86,10 @@ class DataPipeline:
         missing_name_report: dict[str, Any] = {}
 
         try:
-            logger.info(f"Starting aggregator collection (limit: {limit if limit else 'ALL'})")
-
-            if not self.db_session:
-                logger.error("Database session not available")
-                return {"status": "failed", "error": "No database session"}
+            logger.info("Starting aggregator collection")
 
             # 1. Fetch items
-            query = self.db_session.query(Item)
-            if limit:
-                # Use liquidity-based sorting for limited runs
-                from repositories import ItemRepository
-
-                items = ItemRepository.get_top_items(self.db_session, limit=limit)
-            else:
-                items = query.all()
+            items = self.load_catalog()
 
             if not items:
                 logger.warning("No items found to update.")
@@ -113,7 +103,7 @@ class DataPipeline:
             if duplicate_names:
                 duplicate_name_sample = duplicate_names[:10]
                 logger.warning(
-                    "Found %s duplicate item names in the DB snapshot. "
+                    "Found %s duplicate item names in the catalog. "
                     "These rows will share the same external lookup key. Sample: %s",
                     duplicate_name_count,
                     duplicate_name_sample,
@@ -190,12 +180,9 @@ class DataPipeline:
             backfilled_csv_path = None
             snapshot_csv_path = None
             if price_records:
-                from database import Item
-
-                # Get all items: slug map for CSV export
-                all_items = self.db_session.query(Item.id, Item.item_id, Item.is_backfilled).all()
-                id_to_slug = {row.id: row.item_id for row in all_items}
-                hist_item_ids = {row.id for row in all_items if row.is_backfilled == 1}
+                # Slug map for CSV export
+                id_to_slug = {row.id: row.item_id for row in items}
+                hist_item_ids = {row.id for row in items if row.is_backfilled == 1}
 
                 agg_date = snapshot_day.strftime("%Y-%m-%d")
 
@@ -379,19 +366,14 @@ class DataPipeline:
             # After the prices are saved and isolated from them: a failure here must
             # not cost the day's collection.
             new_items_discovered = 0
-            if limit is None:
-                try:
-                    from collectors.new_item_discovery import discover_new_items
+            try:
+                from collectors.new_item_discovery import discover_new_items
 
-                    new_items_discovered = discover_new_items(
-                        self.db_session,
-                        aggregator._raw_sources,
-                        snapshot_day,
-                        ops_root=os.environ.get("AGGREGATOR_OPS_DIR") or None,
-                    )
-                except Exception as disc_err:
-                    self.db_session.rollback()
-                    logger.warning("New-item discovery failed (collection unaffected): %s", disc_err)
+                new_items_discovered = discover_new_items(
+                    aggregator._raw_sources, snapshot_day, ops_root=self.ops_root, catalog=items
+                )
+            except Exception as disc_err:
+                logger.warning("New-item discovery failed (collection unaffected): %s", disc_err)
 
             # 5. Summarise the run (the returned counts are the record)
             duration_seconds = (datetime.utcnow() - start_time).total_seconds()
@@ -425,9 +407,6 @@ class DataPipeline:
             }
 
         except Exception as e:
-            if self.db_session:
-                self.db_session.rollback()
-
             duration_seconds = (datetime.utcnow() - start_time).total_seconds()
 
             logger.error(f"❌ Aggregator collection failed: {e}", exc_info=True)

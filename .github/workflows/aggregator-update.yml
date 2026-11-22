@@ -28,13 +28,6 @@ on:
           docs/changelog/2026-08-07-archive-schema-and-keys.md
         type: boolean
         default: false
-      backfill_ops_slug:
-        description: >
-          One-time: stamp item_slug onto the existing ops/*.parquet rows so a
-          forecast can be joined to its price history without Supabase. New
-          rows already carry it. Idempotent. Needs SUPABASE_DATABASE_URL.
-        type: boolean
-        default: false
 
 defaults:
   run:
@@ -91,12 +84,11 @@ jobs:
           echo "Snapshot day resolved to $SNAPSHOT_DATE (runner clock: $(date -u +%FT%TZ))"
           echo "SNAPSHOT_DATE=$SNAPSHOT_DATE" >> "$GITHUB_ENV"
 
-      # Snapshot-tier items keep only their latest row in Supabase, so each
-      # day's collection is dumped to the cs2-oracle-data repo as the durable
-      # record of their price history.
+      # The cs2-oracle-data repo is the durable record of every day's prices.
       #
-      # Checked out BEFORE the aggregate step so new-item discovery can read and write
-      # ops/items.parquet (AGGREGATOR_OPS_DIR below) on a night Postgres refuses the insert.
+      # Checked out BEFORE the aggregate step: the catalog the aggregator prices is
+      # ops/items.parquet there, and new-item discovery writes to it (AGGREGATOR_OPS_DIR
+      # below). Since Phase 4 PR 2b the step needs no database at all.
       # price-archive is deliberately not linked here: nothing else in the aggregate step
       # writes to the archive (docs/specs/2026-10-13-ops-readers-switch-design.md, PR 5).
       - name: Checkout data archive
@@ -111,7 +103,6 @@ jobs:
       - name: Run Aggregator Task
         working-directory: ./backend
         env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
           ENVIRONMENT: production
           DEBUG: false
           # Pins the pipeline to the same day the append step will use.
@@ -155,22 +146,9 @@ jobs:
           --archive-dir ../archive/price-archive
           --apply
 
-      - name: Backfill item_slug on the ops tables (one-time, manual)
-        if: inputs.backfill_ops_slug
-        working-directory: ./backend
-        env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
-          ENVIRONMENT: production
-          DEBUG: false
-        run: >
-          python scripts/backfill_ops_item_slug.py
-          --archive-dir ../archive/price-archive
-          --apply
-
       - name: Append to Parquet archive
         working-directory: ./backend
         env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
           ENVIRONMENT: production
           DEBUG: false
         run: >
@@ -178,7 +156,6 @@ jobs:
           --date "$SNAPSHOT_DATE"
           --out-dir ../archive
           --snapshot-csv /tmp/aggregator-snapshots-$SNAPSHOT_DATE.csv
-          --backfilled-csv /tmp/aggregator-backfilled-$SNAPSHOT_DATE.csv
           --exchange-rates-csv /tmp/exchange-rates-$SNAPSHOT_DATE.csv
 
       # Runs INSIDE this workflow, between the append and the publish, so the
@@ -248,17 +225,6 @@ jobs:
         continue-on-error: true
         working-directory: ./backend
         run: python scripts/check_fx_ratios.py --archive-dir ../archive/price-archive
-
-      # Phase 1.2 dual-write for the catalog: rows Postgres took are copied from the whole `items`
-      # table (~32k rows; reads work on a read-only DB). The copy upserts by id, so rows discovery
-      # wrote to ops/items.parquet alone on a read-only night (ids >= 2**40) are kept.
-      # continue-on-error, like every dual-write.
-      - name: Sync item catalog to ops/items.parquet
-        continue-on-error: true
-        working-directory: ./backend
-        env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
-        run: python scripts/ops_sync_from_postgres.py --archive-dir ../archive/price-archive --tables items --apply
 
       # The parquet files ARE the data (each holds full history), so git history
       # of them has no value and only bloats the repo. Republish the archive as a
