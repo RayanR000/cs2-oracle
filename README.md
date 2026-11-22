@@ -31,7 +31,7 @@ harness, because on this problem an impressive-looking number is easy to produce
 usually wrong.
 
 **Stack:** Python · LightGBM · split-conformal prediction · DuckDB over Parquet ·
-PostgreSQL (Supabase, being retired for Parquet) · FastAPI · GitHub Actions
+PostgreSQL (Supabase, being retired for Parquet) · GitHub Actions
 
 ## What it serves
 
@@ -48,8 +48,8 @@ constant up or down call can look skilful while carrying no information.
 ## How it works
 
 ```
-7 market feeds ──► Aggregator ──► Parquet archive ──► Train ──► Calibrate ──► FastAPI
-(CSGOTrader dumps)  outlier-voted   (DuckDB, 2013–)    LightGBM   conformal     (Supabase)
+7 market feeds ──► Aggregator ──► Parquet archive ──► Train ──► Calibrate ──► Forecast record
+(CSGOTrader dumps)  outlier-voted   (DuckDB, 2013–)    LightGBM   conformal     (Parquet)
                     median                             per horizon band + isotonic
                                                                      │
                                          Backtest ◄──────────────────┘
@@ -75,7 +75,6 @@ uv sync --extra dev                   # add --extra mlops for MLflow tracking
 cp backend/.env.example backend/.env  # set DATABASE_URL, STEAM_API_KEY, SECRET_KEY
 cd backend
 uv run python scripts/run_task.py migrate
-uv run uvicorn main:app --port 8000 --reload
 ```
 
 <details>
@@ -92,16 +91,11 @@ CREATE TABLE alembic_version (
 
 </details>
 
-### API
+### Output
 
-| Endpoint | Returns |
-|----------|---------|
-| `GET /items/{id}/prediction` | An item's band, centre, `move_odds` and `anomaly_p` |
-| `GET /items/volatility` | Items ranked by expected swing or `move_odds` |
-| `GET /accuracy/summary` | Aggregate backtest metrics, filterable by price tier |
-| `GET /monitoring/health` | Service and data-freshness status |
-
-Set `DEBUG=true` in `.env` to serve interactive docs at `/docs`.
+There is no API until the frontend rebuild. Each night's forecasts are written to the Parquet
+forecast record (`ops/item_forecasts/YYYY-MM.parquet` in the data repo), and the backtest's
+scores to `ops/prediction_accuracy.parquet`.
 
 ### Tests
 
@@ -116,7 +110,6 @@ CI also runs `ruff` and `mypy`.
 
 ```
 backend/
-  api/          FastAPI routes, schemas, serving policy
   collectors/   Aggregator, backfill, supply and volume scrapers
   models/       Forecaster, conformal, recalibration, data quality, source weights
   backtest/     Price resolution, scoring, directional test, promotion gate

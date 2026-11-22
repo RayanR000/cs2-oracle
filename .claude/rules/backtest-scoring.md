@@ -6,6 +6,12 @@ paths:
 
 # Scoring and resolving the backtest
 
+- **`MIN_SERVED_PRICE_USD = 1.0` (`backtest/scoring.py`) is a convention, not a derivation.** It is
+  set equal to the lower bound of `HEADLINE_MIN_TIER` so a figure quoted over the >= $1 cohort is
+  the population the headline measured; `tests/test_served_price_floor.py` fails if they diverge.
+  It is a RANKING floor, not a serving floor: `predict` forecasts every eligible item at any price.
+  (Moved from `api/serving_policy.py` and the retired `serving-policy` rule in Phase 4 PR 5.)
+
 - **The backtest resolves BOTH legs of `actual_ret` through
   `backtest/price_resolution.py::resolve_anchors`.** Using `item_forecasts.current_price` as
   the base leg is the bug that let one cohort score 61.76% and 33.74% on different days, and
