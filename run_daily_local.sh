@@ -5,18 +5,19 @@
 # exhausted: it runs the same daily pipeline on this machine and force-pushes
 # the refreshed archive to RayanR000/cs2-oracle-data.
 #
-# Writes to PRODUCTION Supabase (backend/.env) and force-pushes the data repo's
-# main branch (the intended once-per-day squash). Requires push access to
+# Runs the PRODUCTION migration against Supabase (backend/.env) unless --no-db,
+# and force-pushes the data repo's main branch (the intended once-per-day squash).
+# The aggregate step itself needs no database since Phase 4 PR 2b: its catalog is
+# the clone's ops/items.parquet, and new-item discovery writes there. Requires push access to
 # RayanR000/cs2-oracle-data via your git/gh credentials.
 #
 # Does NOT run the forecast chain (Price Forecast -> Backtest) -- those are
 # separate workflows and also need Actions minutes.
 #
-# --no-db: skip the DB migration + DB-coupled aggregate and produce the snapshot
-#   straight from the csgotrader dumps (scripts/export_snapshot_dbfree.py). Use
-#   when Supabase is unreachable. Drops the historical carry-forward and the
-#   separate backfilled/OHLCV CSV (both need the items table); the raw dump is
-#   the full universe, so daily coverage is unaffected.
+# --no-db: skip the DB migration and produce the snapshot straight from the
+#   csgotrader dumps (scripts/export_snapshot_dbfree.py) instead of the aggregate
+#   task. Use when Supabase is unreachable; the raw dump is the full universe, so
+#   daily coverage is unaffected.
 #
 # Usage:  ./run_daily_local.sh [--no-db]
 #
@@ -55,33 +56,34 @@ fi
 export AGGREGATOR_SNAPSHOT_DATE="$SNAPSHOT_DATE"
 echo "Snapshot day: $SNAPSHOT_DATE (runner clock: $(date -u +%FT%TZ))"
 
+echo "== [3/6] Clone data archive fresh =="
+# Fresh clone every run: the local price-archive/ dir runs BEHIND remote, so
+# reusing it would force-push stale history over the newer remote side. Cloned
+# BEFORE the aggregate: the catalog it prices is the clone's ops/items.parquet.
+ARCHIVE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cs2-archive-$SNAPSHOT_DATE.XXXXXX")"
+git clone --depth 1 "$DATA_REPO" "$ARCHIVE_DIR"
+export AGGREGATOR_OPS_DIR="$ARCHIVE_DIR/price-archive/ops"
+
 set -o pipefail
 if [ "$NO_DB" -eq 1 ]; then
   echo "== [1/6] DB migration SKIPPED (--no-db) =="
-  echo "== [3/6] Export snapshot from dumps (no Supabase) =="
+  echo "== [4/6] Export snapshot from dumps (no Supabase) =="
   "$PY" scripts/export_snapshot_dbfree.py --date "$SNAPSHOT_DATE" 2>&1 | tee aggregator.log
 else
   echo "== [1/6] DB migration =="
   "$PY" scripts/run_task.py migrate
-  echo "== [3/6] Aggregate (writes prices to prod) =="
+  echo "== [4/6] Aggregate (catalog from the clone's items.parquet) =="
   "$PY" scripts/run_task.py aggregate 2>&1 | tee aggregator.log
 fi
 
 SNAP_CSV="/tmp/aggregator-snapshots-$SNAPSHOT_DATE.csv"
 [ -f "$SNAP_CSV" ] || { echo "ERROR: aggregator did not produce $SNAP_CSV"; exit 1; }
 
-echo "== [4/6] Clone data archive fresh =="
-# Fresh clone every run: the local price-archive/ dir runs BEHIND remote, so
-# reusing it would force-push stale history over the newer remote side.
-ARCHIVE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cs2-archive-$SNAPSHOT_DATE.XXXXXX")"
-git clone --depth 1 "$DATA_REPO" "$ARCHIVE_DIR"
-
 echo "== [5/6] Append prices + supply/volume =="
 "$PY" scripts/append_to_parquet.py \
   --date "$SNAPSHOT_DATE" \
   --out-dir "$ARCHIVE_DIR" \
   --snapshot-csv "$SNAP_CSV" \
-  --backfilled-csv "/tmp/aggregator-backfilled-$SNAPSHOT_DATE.csv" \
   --exchange-rates-csv "/tmp/exchange-rates-$SNAPSHOT_DATE.csv"
 
 # Best-effort, exactly like continue-on-error in CI: a single-venue outage

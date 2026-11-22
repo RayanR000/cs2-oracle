@@ -62,6 +62,10 @@ Postgres would stop the Aggregator, the head of the whole chain, so this is the 
    "Database Migration" until PR 6.
 6. Gate: a local Aggregator run against the scratch partitions (`--no-db` style, no `DATABASE_URL`)
    produces the same snapshot CSV as main for the same input.
+   **Done 2026-11-22: passed**; the only difference is a partition-only item main could not
+   price. Also done in this PR, not listed above: `append_to_parquet.py`'s legacy Supabase path
+   and `--backfilled-csv`, and `run_daily_local.sh` cloning the data repo before the aggregate.
+   See `changelog/2026-11-22-aggregator-catalog-from-items-parquet.md`.
 
 ## PR 3: parity, sync and reconcile deleted
 
