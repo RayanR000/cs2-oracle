@@ -57,8 +57,8 @@ os.environ["FEATURE_NATIVE_NAN"] = "1"
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from api.serving_policy import MIN_SERVED_PRICE_USD
 from backtest.paired_mde import paired_metric_difference
+from backtest.scoring import MIN_SERVED_PRICE_USD
 from database import SessionLocal
 from models.forecaster import CENTRE_OBJECTIVE_MAP, ItemForecaster
 from scripts.archive.anomaly_band_modulator_ab import _lookup_scale

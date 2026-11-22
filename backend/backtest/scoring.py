@@ -630,6 +630,12 @@ def score_cohort(records: list[dict]) -> tuple[dict, int]:
 # penny items" is a real question the tier rows keep answerable.
 HEADLINE_MIN_TIER = 1
 
+# The ranking floor: the >= $1 cohort the headline describes. Equal to the lower bound of
+# HEADLINE_MIN_TIER by convention, not derivation (tests/test_served_price_floor.py fails if they
+# diverge), so the population a figure quotes is the one the headline measured. It lived in
+# api/serving_policy.py until the API was retired (Phase 4 PR 5).
+MIN_SERVED_PRICE_USD = 1.0
+
 # The >=$1 aggregate is stored under this sentinel tier. It is NOT a price
 # band: real tiers are 0..4 and the all-tiers aggregate is NULL, so the
 # headline needed a third thing to be. Negative by construction so it can

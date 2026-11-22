@@ -354,7 +354,7 @@ class TestTrainMinMedianPriceEnv:
 
     def test_the_production_default_matches_the_served_floor(self):
         """The training floor tracks what the product actually serves."""
-        from api.serving_policy import MIN_SERVED_PRICE_USD
+        from backtest.scoring import MIN_SERVED_PRICE_USD
         from scripts.forecast_prices import DEFAULT_TRAIN_MIN_MEDIAN_PRICE
 
         assert DEFAULT_TRAIN_MIN_MEDIAN_PRICE == MIN_SERVED_PRICE_USD, (

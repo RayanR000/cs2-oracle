@@ -47,8 +47,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from api.serving_policy import MIN_SERVED_PRICE_USD as SERVED_MIN_PRICE
 from backtest.price_resolution import SMOOTH_WINDOW, load_voted_prices
+from backtest.scoring import MIN_SERVED_PRICE_USD as SERVED_MIN_PRICE
 from backtest.scoring import excluded_forecast_date, interval_score, price_tier
 
 ALPHA = 0.2

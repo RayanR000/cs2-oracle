@@ -42,7 +42,7 @@ os.environ.setdefault("CLIMATOLOGY_SCALE", "1")
 
 import numpy as np
 import pandas as pd
-from api.serving_policy import MIN_SERVED_PRICE_USD
+from backtest.scoring import MIN_SERVED_PRICE_USD
 from database import SessionLocal
 from models.forecaster import ItemForecaster
 from scripts.archive.ab_test_item_metadata import (
