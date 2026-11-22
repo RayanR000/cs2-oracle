@@ -55,8 +55,9 @@ paths:
   (`changelog/2026-10-30-candidate-resolution-reads-ops-partitions.md`) candidate resolution,
   which also writes the partitions directly when Postgres cannot take writes. Every other
   reader still reads Postgres until its PR (`specs/2026-10-13-ops-readers-switch-design.md`);
-  `scripts/ops_parity.py` (Backtest Accuracy) proves the stores agree per date, and
-  `ops-sync.yml` repairs. Tests get a temp `OPS_DIR` from conftest's `_hermetic_ops_dir`.
+  the parity check and `ops-sync.yml` that compared and repaired the two stores were deleted in
+  Phase 4 PR 3 (`changelog/2026-11-22-parity-and-sync-deleted.md`): with Postgres read-only
+  since 2026-10-30 there was nothing left to compare. Tests get a temp `OPS_DIR` from conftest's `_hermetic_ops_dir`.
   `changelog/2026-10-12-ops-dual-write.md`.
 - **Operational tables live in `price-archive/ops/*.parquet`.** API routes read Parquet
   first with a DB fallback. See `db/parquet.py`.

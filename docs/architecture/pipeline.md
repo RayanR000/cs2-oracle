@@ -12,7 +12,6 @@ is dispatched by hand. Nine workflows exist in `.github/workflows/` (2026-10-13)
 | `schema-drift-check.yml` | `pull_request` / `push` to main (paths-filtered) | Pre-merge gate: applies the migrations to a throwaway Postgres and diffs against `Base.metadata`, so an ORM column with no migration fails before merge | nothing |
 | `lint.yml` | `pull_request` / `push` to main | `ruff`, `mypy`, import smoke test, fast test gate | nothing |
 | `model-diagnostics.yml` | `workflow_dispatch` only | Score the served classifier — one matrix job per horizon, `--train-only`, artifacts discarded. A dispatch with default inputs is the control arm | nothing |
-| `ops-sync.yml` | `workflow_dispatch` only | Copy named forecast dates from Postgres into the monthly partitions (fill ids, repair a failed night) | `ops/<table>/YYYY-MM.parquet` |
 | `archive-restore-day.yml` | `workflow_dispatch` only | One-off repair of a deleted archive day | `prices-YYYY-MM.parquet` |
 
 Every archive-writing workflow checks out `RayanR000/cs2-oracle-data` and force-pushes it back

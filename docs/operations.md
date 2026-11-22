@@ -17,11 +17,11 @@ There is **no hang protection except one job-level timeout** — see
 | Secret | Used by | If unset |
 |---|---|---|
 | `SUPABASE_DATABASE_URL` | every workflow that touches the DB (all but `schema-drift-check`, which stands up its own throwaway Postgres, and `lint`) | every DB step fails |
-| `CS2_DATA_REPO_TOKEN` | `aggregator-update`, `price-forecast`, `backtest-accuracy`, `ops-sync`, `archive-restore-day`, `model-diagnostics`, `forecast-freshness-check` | the **archive checkout fails before any collection or forecasting runs** — the job dies at `Checkout data archive` / `Checkout price archive` |
+| `CS2_DATA_REPO_TOKEN` | `aggregator-update`, `price-forecast`, `backtest-accuracy`, `archive-restore-day`, `model-diagnostics`, `forecast-freshness-check` | the **archive checkout fails before any collection or forecasting runs** — the job dies at `Checkout data archive` / `Checkout price archive` |
 
 `CS2_DATA_REPO_TOKEN` must be able to read *and* force-push
 `RayanR000/cs2-oracle-data` (`aggregator-update.yml:225`, `price-forecast.yml:325`,
-`backtest-accuracy.yml:118`, `ops-sync.yml:94`). `STEAM_API_KEY` and the `CSMARKETAPI_*` keys are optional;
+`backtest-accuracy.yml:118`). `STEAM_API_KEY` and the `CSMARKETAPI_*` keys are optional;
 nothing in the daily pipeline reads them.
 
 ## Workflows
@@ -35,7 +35,6 @@ nothing in the daily pipeline reads them.
 | `forecast-freshness-check` | 12:00 UTC daily | Independent monitor: fails loudly when yesterday's forecast never landed | nothing |
 | `schema-drift-check` | On PR / push to `main` (paths-filtered) | Pre-merge gate: applies migrations to a throwaway Postgres and diffs against `Base.metadata` | nothing |
 | `lint` | On PR / push to `main` | `ruff`, `mypy`, import smoke test, fast test gate (`-n 4`) | nothing |
-| `ops-sync` | Manual dispatch only | Copies named forecast dates from Postgres into `ops/<table>/YYYY-MM.parquet`: fills ids, repairs a night whose partition write failed. Dry run unless `apply` | `cs2-oracle-data` |
 | `archive-restore-day` | Manual dispatch only | One-off repair of a deleted archive day | `cs2-oracle-data` |
 
 **Retired 2026-10-13:** `discover-new-items` (broken at import: it needed a
@@ -76,7 +75,7 @@ These three are easy to miss in a log and each one is a hard failure:
    If a day is missing from the archive, check this step's logged value first.
 2. **`Publish updated archive (flat history)`** — present in every archive-writing
    workflow (`aggregator-update.yml:217`, `price-forecast.yml:316`,
-   `backtest-accuracy.yml:109`, `ops-sync.yml:94`). Each job checks out `cs2-oracle-data` into an ephemeral `archive/`, so
+   `backtest-accuracy.yml:109`). Each job checks out `cs2-oracle-data` into an ephemeral `archive/`, so
    without this step the run's Parquet writes are discarded at teardown. This is exactly
    how `item_forecasts.parquet` froze at 2026-07-29 while Supabase kept advancing. It
    runs `if: always()` (except `train-only`) and force-pushes an orphan commit, so a red
@@ -126,8 +125,7 @@ The archive is **not a branch of this repo.** It lives in a separate repo,
 any instruction mentioning one is dead.
 
 Every writing workflow does the same three things (`aggregator-update.yml:108-116,217-225`;
-`price-forecast.yml:65-75,316-325`; `backtest-accuracy.yml:49-59,109-118`;
-`ops-sync.yml`):
+`price-forecast.yml:65-75,316-325`; `backtest-accuracy.yml:49-59,109-118`):
 
 1. `actions/checkout@v7` of `RayanR000/cs2-oracle-data` at `ref: main`, `path: archive`,
    `fetch-depth: 1`, authenticated with `CS2_DATA_REPO_TOKEN`

@@ -73,6 +73,9 @@ Delete `scripts/ops_parity.py`, `ops_sync_from_postgres.py`, `ops-sync.yml`, the
 `backtest-accuracy.yml` and its `parity_runs.parquet` push, `tests/test_ops_parity.py`,
 `tests/test_ops_sync_from_postgres.py`. Also `evidence-report` and `maturity-gate` steps' `DATABASE_URL`
 (they read only the partitions now: confirm by running each against the scratch clone first).
+**Amended 2026-11-22:** the evidence reports did; the maturity gate (`centre_vs_lastprice.py
+--gate`) still read Postgres, so it was moved to the partitions with a backup proof. See
+`changelog/2026-11-22-parity-and-sync-deleted.md`.
 
 ## PR 4: the forecaster stops holding a session
 

@@ -57,10 +57,10 @@ and compare against the calendar span.
 - `event-correlation-analysis`, `discover-new-items`, `ab-harness-batch` and
   `ops-partition-backfill` were **deleted** 2026-10-13 (paused for Actions minutes, broken at
   import, or one-off and applied). Not a regression.
-- Nine workflows exist as of 2026-10-13: the three chain legs, `forecast-freshness-check`
+- Eight workflows exist as of 2026-11-22: the three chain legs, `forecast-freshness-check`
   (cron 12:00 daily — an independent monitor of the Price Forecast leg, so read it before
-  concluding a forecast gap yourself), `schema-drift-check`, `lint`, and three dispatch-only
-  ones: `model-diagnostics`, `ops-sync`, `archive-restore-day`.
+  concluding a forecast gap yourself), `schema-drift-check`, `lint`, and two dispatch-only
+  ones: `model-diagnostics`, `archive-restore-day` (`ops-sync` was deleted in Phase 4 PR 3).
   `.github/workflows/` is the source of truth.
 
 ## Safety
