@@ -8,9 +8,10 @@ Layout (docs/specs/2026-10-11-postgres-to-parquet-history-design.md):
     ops/forecast_candidate_outcomes/YYYY-MM.parquet  (by the candidate's forecast_date, passed as `_part`)
     ops/items.parquet
 
-Postgres stays the read source. Writers call `upsert` after their Postgres commit with rows read
-back from Postgres (db/ops_readback.py), inside `dual_write`, so a failure here never fails the
-run; scripts/ops_parity.py catches it the same night.
+The partitions are the store of record since Postgres went read-only (2026-10-30). Writers that
+still dual-write call `upsert` after their Postgres commit with rows read back from Postgres
+(db/ops_readback.py), inside `dual_write`, so a failure here never fails the run. The nightly
+parity check that used to catch such a failure was deleted in Phase 4 PR 3.
 
 Guards, all raising PartitionError: a closed month (calendar end + 43 days) is refused without
 `allow_closed`; a column outside the schema the 2026-10-12 backfill wrote fails instead of being

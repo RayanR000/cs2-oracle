@@ -17,14 +17,13 @@ METHOD (read-only; the archive already holds every number):
 
 * Data: rows production actually SERVED and then resolved against the realised
   price. No replay, no artifact, no retrain, so no flag-matching hazard.
-  DEFAULT IS PROD POSTGRES (read-only), per the `archive-reads` rule: neither
-  copy of `ops/forecast_outcomes.parquet` is the full scored panel. The durable
-  CI-written archive is fresh and its cells are complete but SHALLOW — measured
-  2026-08-25 it holds 1-2 fewer clean dates per horizon than prod (h=3: 14 vs
-  16, h=7: 15 vs 17, h=14: 10 vs 11) — which matters most for the maturity gate,
-  where a shallow read under-reports readiness. `--archive-dir` still reads a
-  Parquet copy for an offline or historical cross-check; the local working copy
-  is the dangerous one and should never be used for a panel figure.
+  The panel is the `forecast_outcomes` MONTHLY PARTITIONS (`db/ops_store.py`),
+  since Phase 4 PR 3 (2026-11-22). It was prod Postgres until then, but Postgres
+  took its last outcome on 2026-10-30. Never the single-file
+  `ops/forecast_outcomes.parquet` mirror: it is shallow (measured 2026-08-25:
+  1-2 fewer clean dates per horizon than prod), which matters most for the
+  maturity gate, where a shallow read under-reports readiness. `--archive-dir`
+  points at another price-archive dir's partitions.
 * THE ANCHOR WEDGE IS REBASED, which is the whole correctness of this script.
   `predict()` builds the triple as `current_price x (1 + ret)` while the outcome
   legs (`base_price`, `actual_price`) come from `resolve_anchors`; the two
@@ -106,30 +105,25 @@ _COLUMNS = [
 ]
 
 
-def _read_db() -> pd.DataFrame:
-    """The scored panel from prod Postgres, read-only."""
-    from database import SessionLocal
-    from sqlalchemy import text
+def _read(ops_root: Path | None) -> pd.DataFrame:
+    """The scored panel from the forecast_outcomes monthly partitions (``db/ops_store.py``).
 
-    db = SessionLocal()
-    try:
-        sql = _SELECT.format(source="forecast_outcomes", min_price=SERVED_MIN_PRICE)
-        rows = db.execute(text(sql)).fetchall()
-    finally:
-        db.close()
+    Read Postgres until Phase 4 PR 3 (2026-11-22). Postgres stopped taking outcomes on
+    2026-10-30, so the gate had been counting a frozen panel; the partitions are the only
+    store that keeps growing. *ops_root* None means ``db.parquet.OPS_DIR``. Never the
+    single-file ``ops/forecast_outcomes.parquet`` mirror, which is short.
+    """
+    from db import ops_store
+
+    read = ops_store.reader(("forecast_outcomes",), root=ops_root)
+    rows = read(_SELECT.format(source="forecast_outcomes", min_price=SERVED_MIN_PRICE))
     return pd.DataFrame(rows, columns=_COLUMNS)
 
 
-def _read_parquet(archive_dir: Path) -> pd.DataFrame:
-    import duckdb
-
-    p = archive_dir / "ops" / "forecast_outcomes.parquet"
-    return duckdb.connect().sql(_SELECT.format(source=f"read_parquet('{p}')", min_price=SERVED_MIN_PRICE)).fetchdf()
-
-
 def _load(archive_dir: Path | None) -> pd.DataFrame:
-    df = _read_parquet(archive_dir) if archive_dir is not None else _read_db()
-    print(f"source: {'parquet ' + str(archive_dir) if archive_dir else 'prod postgres'}")
+    ops_root = archive_dir / "ops" if archive_dir is not None else None
+    df = _read(ops_root)
+    print(f"source: ops partitions under {ops_root or 'db.parquet.OPS_DIR'}")
     df["forecast_date"] = pd.to_datetime(df["forecast_date"]).dt.date
     for c in (
         "base_price",
@@ -277,7 +271,7 @@ def main() -> int:
     ap.add_argument(
         "--archive-dir",
         default=None,
-        help="read a price-archive Parquet copy instead of prod Postgres. Shallower; for offline cross-checks only.",
+        help="a price-archive dir whose ops/ partitions to read (default: db.parquet.OPS_DIR)",
     )
     ap.add_argument("--json-out", default=None)
     ap.add_argument(
