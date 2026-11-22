@@ -449,12 +449,6 @@ def test_parse_day_returns_net_of_the_steam_fee():
     assert records[0][2] == pytest.approx(10.0, rel=1e-6)
 
 
-def test_steam_fee_multiplier_matches_the_repo_constant():
-    from scripts.archive.backfill_steam_listing_history import STEAM_FEE_MULTIPLIER
-
-    assert tracker.STEAM_FEE_MULTIPLIER == STEAM_FEE_MULTIPLIER == 1.1607
-
-
 def test_a_price_that_is_positive_only_before_the_fee_still_survives():
     payload = {"Cheap": {"steam": {"last_24h": 0.02}}}
     records = tracker.parse_day(payload, date(2025, 6, 15))

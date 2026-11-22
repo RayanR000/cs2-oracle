@@ -63,8 +63,7 @@ def served_items(as_of: date | datetime, read=None) -> dict[str, tuple[int, bool
     """``{slug: (items.id, is_young)}`` for every item served on ``as_of``.
 
     *read* is a ``sql -> rows`` reader; the default is the ops partitions' ``items.parquet``
-    (Phase 2 PR 5). ``ops_store.pg_reader(session)`` gives Postgres's side for read twice.
-    The cutoff is a literal, so the one SQL runs unchanged on DuckDB, Postgres and SQLite."""
+    (Phase 2 PR 5).    The cutoff is a literal, so the one SQL runs unchanged on DuckDB and SQLite."""
     if read is None:
         from db import ops_store
 

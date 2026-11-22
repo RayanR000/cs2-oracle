@@ -44,7 +44,7 @@ jobs:
         # backend/ was formatted; it used to lint only the files a push changed.
         run: |
           ruff check .
-          ruff format --check backend --exclude backend/migrations
+          ruff format --check backend
 
   test:
     runs-on: ubuntu-latest
@@ -85,17 +85,13 @@ jobs:
         # see docs/changelog/2026-09-15-ci-test-gate.md) keeps the PR gate in
         # budget. Collection runs first inside pytest — an unimportable test
         # module fails this step, which is what caught the 2026-09 red main.
-        # Env guard: tests must never touch prod. backend/.env points at the
-        # production Supabase pooler, so pin a throwaway sqlite DB here —
-        # anything that needs a live DB then fails loudly instead of writing.
         # faulthandler_timeout: the gate runs in ~1 min, but it has hung
         # intermittently on CI until the job timeout, and a cancelled job keeps
         # no log. Any single test past 120s now dumps every thread's stack.
         # -n 4 with OMP_NUM_THREADS=1: four xdist workers, one BLAS/LightGBM
         # thread each, so they do not oversubscribe the runner's cores. The
-        # gate's sqlite file is never written, so workers can share it.
+        # gate has no database to share.
         env:
-          DATABASE_URL: sqlite:////tmp/ci-gate.db
           ENVIRONMENT: test
           OMP_NUM_THREADS: '1'
         run: |

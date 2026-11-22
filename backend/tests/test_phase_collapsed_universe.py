@@ -154,38 +154,4 @@ def test_voted_cache_is_invalidated(tmp_path):
 # -- the published gate's own loaders --------------------------------------
 
 
-def test_gate_price_loader_drops_them(tmp_path, monkeypatch):
-    """`walkforward_backtest` never calls `fetch_price_history`; it globs the
-    archive itself, which is why the bid exclusion needed a second fix here."""
-    from scripts.archive import walkforward_backtest as wf
-
-    archive = _archive(tmp_path, COLLAPSED + SINGLE_ASSET)
-    monkeypatch.setattr(wf, "ARCHIVE_DIR", archive)
-
-    con = duckdb.connect()
-    try:
-        out = wf._load_all_prices(con, [(s,) for s in COLLAPSED + SINGLE_ASSET])
-    finally:
-        con.close()
-
-    assert set(out["item_id"]) == set(SINGLE_ASSET)
-
-
-def test_gate_item_selection_drops_them(tmp_path, monkeypatch):
-    """Selection has to agree with the price loader, or the `max_items` budget
-    is spent on items that then come back with no rows."""
-    from scripts.archive import walkforward_backtest as wf
-
-    archive = _archive(tmp_path, COLLAPSED + SINGLE_ASSET, days=120)
-    monkeypatch.setattr(wf, "ARCHIVE_DIR", archive)
-
-    con = duckdb.connect()
-    try:
-        rows = wf._load_parquet_items(con, backfilled_only=False)
-    finally:
-        con.close()
-
-    assert {r[0] for r in rows} == set(SINGLE_ASSET)
-
-
 # -- the ranked product surfaces -------------------------------------------

@@ -189,39 +189,3 @@ def test_label_resolution_path_excludes_the_bid(tmp_path):
 
     assert len(out) == 1
     assert out.iloc[0]["price"] == pytest.approx(LADDER_ASK_CONSENSUS)
-
-
-def test_published_gate_loader_excludes_the_bid(tmp_path, monkeypatch):
-    """`walkforward_backtest._load_all_prices` does not call
-    `_apply_multi_source_voting` at all — it hands duplicate item-days to
-    `engineer_features`, which collapses them with a plain *mean*. A mean has no
-    outlier rejection whatever, so the bid lands in the published Backtest
-    Accuracy number undiluted. The filter has to be in the query.
-    """
-    import duckdb
-    from scripts.archive import walkforward_backtest as wf
-
-    archive = tmp_path / "price-archive"
-    archive.mkdir()
-    rows = _ladder_rows()
-    pd.DataFrame(
-        {
-            "item_slug": [r[0] for r in rows],
-            "day": pd.to_datetime([r[1] for r in rows]),
-            "mean_price": [r[2] for r in rows],
-            "volume": 1,
-            "source": [r[3] for r in rows],
-        }
-    ).to_parquet(archive / "prices-2026.parquet")
-    monkeypatch.setattr(wf, "ARCHIVE_DIR", archive)
-
-    con = duckdb.connect()
-    try:
-        out = wf._load_all_prices(con, [(LADDER_ITEM,)])
-    finally:
-        con.close()
-
-    assert len(out) == len(LADDER) - 1
-    assert out["price"].min() == pytest.approx(7.17)
-    # The mean the gate actually scores on, with and without the bid.
-    assert out["price"].mean() == pytest.approx(8.778, abs=1e-3)

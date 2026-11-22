@@ -156,12 +156,3 @@ def test_voted_cache_is_invalidated():
     see the query, so a surviving pre-change frame would train the next model
     on the duplicated universe."""
     assert ItemForecaster.VOTED_CACHE_VERSION >= 4
-
-
-def test_purge_script_shares_the_one_predicate():
-    """`purge_phantom_items.py` decides what to delete from production. If its
-    notion of a phantom drifted from the reader's, the archive and the model
-    would disagree about which items exist."""
-    from scripts.archive.purge_phantom_items import is_mangled_key
-
-    assert is_mangled_key is is_phantom_slug

@@ -6,7 +6,6 @@ Used by GitHub Actions to trigger specific pipeline tasks.
 
 import logging
 import os
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -16,39 +15,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("task_runner")
-
-
-def _postgres_read_only() -> bool:
-    """True only when the configured database is Postgres and reports read-only."""
-    from database import engine
-    from sqlalchemy import text
-
-    if engine.dialect.name != "postgresql":
-        return False
-    with engine.connect() as conn:
-        return conn.execute(text("SHOW default_transaction_read_only")).scalar() == "on"
-
-
-def run_migrations(revision="head"):
-    """Run Alembic migrations using the current Python interpreter."""
-    cmd = [sys.executable, "-m", "alembic", "upgrade", revision]
-
-    # A read-only Postgres fails every DDL, and this is the Aggregator's first step,
-    # so it would stop the day's collection and the Price Forecast chained off it.
-    # Skip loudly instead (db/read_only.py).
-    if _postgres_read_only():
-        from db.read_only import report_read_only
-
-        report_read_only(f"alembic upgrade {revision}")
-        return {"status": "success", "revision": revision, "skipped_read_only": True}
-
-    try:
-        logger.info(f"Running migrations: {' '.join(cmd)}")
-        result = subprocess.run(cmd, check=True, cwd=str(Path(__file__).parent.parent))
-        return {"status": "success", "revision": revision, "returncode": result.returncode}
-    except (FileNotFoundError, subprocess.CalledProcessError) as e:
-        logger.error("Migration command failed. Install backend requirements and retry.")
-        raise RuntimeError(f"Could not run migrations to {revision}: {e}") from e
 
 
 # Row-count fields every task can return. This guard used to key on
@@ -172,13 +138,6 @@ def run_task(task_name):
 
             print(f"RESULT: {result}")
 
-        elif task_name == "migrate":
-            logger.info("=" * 60)
-            logger.info("TASK: Database Migration (Alembic upgrade head)")
-            logger.info("=" * 60)
-            result = run_migrations("head")
-            print(f"RESULT: {result}")
-
         elif task_name == "backtest":
             logger.info("=" * 60)
             logger.info("TASK: Backtest Accuracy (All Types)")
@@ -223,7 +182,7 @@ def run_task(task_name):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python run_task.py <task_name>")
-        print("Tasks: aggregate, migrate, backtest, backtest_historical, walkforward_report")
+        print("Tasks: aggregate, backtest, backtest_historical, walkforward_report")
         sys.exit(1)
 
     run_task(sys.argv[1])

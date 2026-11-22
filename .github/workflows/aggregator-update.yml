@@ -61,14 +61,6 @@ jobs:
           uv sync --frozen --no-dev
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
-      - name: Database Migration
-        working-directory: ./backend
-        env:
-          DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
-          ENVIRONMENT: production
-          DEBUG: false
-        run: python scripts/run_task.py migrate
-
       # Resolved ONCE, here, and reused by every step below. Previously the
       # pipeline stamped filenames from its own datetime.utcnow() and this
       # workflow passed `--date $(date -u +%F)` from a separate clock read a step

@@ -5,11 +5,10 @@ is dispatched by hand. Nine workflows exist in `.github/workflows/` (2026-10-13)
 
 | Workflow | Trigger | What it does | Writes |
 |----------|---------|--------------|--------|
-| `aggregator-update.yml` | cron `0 23 * * *` | Fetch 7 CSGOTrader price endpoints + exchange rates; apply migrations | `prices-YYYY-MM.parquet`, `exchange-rates-YYYY.parquet`, `collection_runs`, `ops/items.parquet` |
+| `aggregator-update.yml` | cron `0 23 * * *` | Fetch 7 CSGOTrader price endpoints + exchange rates | `prices-YYYY-MM.parquet`, `exchange-rates-YYYY.parquet`, `collection_runs`, `ops/items.parquet` |
 | `price-forecast.yml` | `workflow_run` on *Aggregator Market Update* | Predict, and retrain when the model is ≥14 days old | `ops/item_forecasts.parquet`, `ops/item_forecasts/YYYY-MM.parquet`, `ops/forecast_candidates/YYYY-MM.parquet` |
-| `backtest-accuracy.yml` | `workflow_run` on *Price Forecast*, plus cron `0 8 * * 1-6` | Resolve matured forecasts, score them, check Postgres/partition parity, publish closed months as releases | `ops/forecast_outcomes{.parquet,/YYYY-MM.parquet}`, `ops/forecast_candidate_outcomes/YYYY-MM.parquet`, `ops/prediction_accuracy.parquet`, `ops/accuracy_alerts.parquet` |
+| `backtest-accuracy.yml` | `workflow_run` on *Price Forecast*, plus cron `0 8 * * 1-6` | Resolve matured forecasts, score them, publish closed months as releases | `ops/forecast_outcomes{.parquet,/YYYY-MM.parquet}`, `ops/forecast_candidate_outcomes/YYYY-MM.parquet`, `ops/prediction_accuracy.parquet`, `ops/accuracy_alerts.parquet` |
 | `forecast-freshness-check.yml` | cron `0 12 * * *` | Independent of the chain: turns "no forecast landed today" into a red run, even on a night the forecast job never ran | nothing |
-| `schema-drift-check.yml` | `pull_request` / `push` to main (paths-filtered) | Pre-merge gate: applies the migrations to a throwaway Postgres and diffs against `Base.metadata`, so an ORM column with no migration fails before merge | nothing |
 | `lint.yml` | `pull_request` / `push` to main | `ruff`, `mypy`, import smoke test, fast test gate | nothing |
 | `model-diagnostics.yml` | `workflow_dispatch` only | Score the served classifier — one matrix job per horizon, `--train-only`, artifacts discarded. A dispatch with default inputs is the control arm | nothing |
 | `archive-restore-day.yml` | `workflow_dispatch` only | One-off repair of a deleted archive day | `prices-YYYY-MM.parquet` |

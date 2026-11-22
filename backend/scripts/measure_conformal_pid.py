@@ -399,8 +399,7 @@ def load_prod_panel(read) -> pd.DataFrame:
     """Served h=3 outcomes plus each row's prior-row blend inputs. Read-only.
 
     *read* is a `sql -> rows` reader: `ops_store.reader(...)` over the monthly ops partitions
-    (prereg storage amendment 2026-11-09), or `ops_store.pg_reader(session)` for the Postgres
-    side of an equality proof. One query each, no parameters, so the same SQL runs on both.
+    (prereg storage amendment 2026-11-09).
     """
     lo = WINDOW[0] - timedelta(days=14)  # priors for the first window dates
     rows = read(
@@ -478,77 +477,10 @@ def report(result: dict) -> str:
     return "\n".join(lines)
 
 
-def _pulled_postgres_reader(session):
-    """Postgres as a `sql -> rows` reader that joins locally.
-
-    Prod Postgres cannot run the panel JOIN (DiskFull on temp files) but plain filtered scans
-    work, so each table is pulled (window-filtered) into in-memory DuckDB and the panel's own SQL
-    runs there. Same views and column names as `ops_store`.
-    """
-    from db import ops_store
-    from sqlalchemy import text
-
-    lo = (WINDOW[0] - timedelta(days=14)).isoformat()
-    hi = WINDOW[1].isoformat()
-    pulls = {
-        "forecast_outcomes": f"SELECT * FROM forecast_outcomes WHERE horizon_days = {HORIZON} "
-        f"AND forecast_date BETWEEN '{WINDOW[0].isoformat()}' AND '{hi}'",
-        "item_forecasts": f"SELECT * FROM item_forecasts WHERE horizon_days = {HORIZON} "
-        f"AND forecast_date BETWEEN '{lo}' AND '{hi}'",
-        "items": "SELECT * FROM items",
-    }
-    import duckdb
-
-    con = duckdb.connect()
-    for table, sql in pulls.items():
-        frame = pd.DataFrame(session.execute(text(sql)).mappings().all())
-        con.register(table, frame)
-    return lambda sql: ops_store.fetch(con, sql)
-
-
-def prove_equal() -> int:
-    """Storage proof (prereg Amendment A7): the panel from the partitions equals the panel from
-    Postgres, row for row. Scores nothing and prints no PID number."""
-    from database import SessionLocal
-    from db import ops_store
-
-    key = ["item_id", "forecast_date"]
-    part = load_prod_panel(ops_store.reader(("item_forecasts", "forecast_outcomes", "items")))
-    db = SessionLocal()
-    try:
-        pg = load_prod_panel(_pulled_postgres_reader(db))
-    finally:
-        db.close()
-    for df in (part, pg):
-        df["forecast_date"] = pd.to_datetime(df["forecast_date"]).dt.date
-    a = part.sort_values(key).reset_index(drop=True)
-    b = pg.sort_values(key).reset_index(drop=True)
-    cols = sorted(set(a.columns) | set(b.columns))
-    same = list(a.columns) == list(b.columns) and len(a) == len(b)
-    if same:
-        for c in cols:
-            x, y = a[c], b[c]
-            if x.dtype.kind in "fi" and y.dtype.kind in "fi":
-                same &= bool(np.allclose(x.astype(float), y.astype(float), rtol=0, atol=1e-9, equal_nan=True))
-            else:
-                same &= bool((x.fillna(-1) == y.fillna(-1)).all())
-    logger.info(
-        f"partitions {len(a):,} rows, postgres {len(b):,} rows, dates {a['forecast_date'].nunique()} | identical: {same}"
-    )
-    return 0 if same else 1
-
-
 def main(argv=None, today: date | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument(
-        "--prove-equal",
-        action="store_true",
-        help="check the panel is identical from the partitions and Postgres; scores nothing",
-    )
-    args = ap.parse_args(argv)
+    ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    if args.prove_equal:
-        return prove_equal()
     today = today or date.today()
     if today < READ_NOT_BEFORE:
         logger.error(

@@ -51,12 +51,11 @@ Backend, from `backend/`, through the venv (`venv/bin/python`, Python 3.13 local
 
 ## Gotchas
 
-- **`backend/.env` points at production.** It sets the prod Supabase pooler
-  `DATABASE_URL` and `ENVIRONMENT=production`, and `config.py` reads `.env` relative to
-  the **current working directory** — so a script run from `backend/` writes to prod,
-  while the same command from the repo root picks up the root `.env` (no `DATABASE_URL`,
-  `ENVIRONMENT=development`). `database.py` builds the engine at import, so setting
-  `os.environ["DATABASE_URL"]` inside a script is already too late to redirect it.
+- **There is no production database.** Postgres/Supabase was retired in Phase 4
+  (`docs/changelog/2026-11-22-engine-deleted.md`): state lives in the Parquet partitions
+  of the data repo, read through `db/ops_store.py` and written through `db/ops_partitions.py`.
+  `database.py` is only the ORM schema that tests build in SQLite. A script that needs
+  `SessionLocal`, `DATABASE_URL` or an Alembic revision is stale.
 - **`--predict-only` does not retrain.** It used to: `check_concept_drift` ran against a
   hardcoded 60% floor above the model's measured 46.7–50.8% DA, so drift fired every run
   and cost a measured 465s of the 835s daily step. Drift is now reported only. Set

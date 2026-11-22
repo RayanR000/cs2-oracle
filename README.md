@@ -31,7 +31,7 @@ harness, because on this problem an impressive-looking number is easy to produce
 usually wrong.
 
 **Stack:** Python · LightGBM · split-conformal prediction · DuckDB over Parquet ·
-PostgreSQL (Supabase, being retired for Parquet) · GitHub Actions
+GitHub Actions
 
 ## What it serves
 
@@ -57,7 +57,7 @@ constant up or down call can look skilful while carrying no information.
 ```
 
 The daily chain is **Aggregator → Price Forecast → Backtest**. Each step triggers when the
-previous one succeeds. Freshness and schema-drift checks run alongside it.
+previous one succeeds. The freshness check runs alongside it.
 
 | Stage | Detail |
 |-------|--------|
@@ -68,28 +68,12 @@ previous one succeeds. Freshness and schema-drift checks run alongside it.
 
 ## Quickstart
 
-Requires Python 3.11+, [uv](https://docs.astral.sh/uv/) and a PostgreSQL database.
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/). There is no database to set up.
 
 ```bash
 uv sync --extra dev                   # add --extra mlops for MLflow tracking
-cp backend/.env.example backend/.env  # set DATABASE_URL, STEAM_API_KEY, SECRET_KEY
-cd backend
-uv run python scripts/run_task.py migrate
+cp backend/.env.example backend/.env  # set STEAM_API_KEY and any collector keys
 ```
-
-<details>
-<summary><b>Empty database?</b> Create the Alembic version table first</summary>
-
-Some revision IDs are longer than Alembic's default 32 characters:
-
-```sql
-CREATE TABLE alembic_version (
-  version_num VARCHAR(255) NOT NULL,
-  CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
-);
-```
-
-</details>
 
 ### Output
 
@@ -114,11 +98,10 @@ backend/
   models/       Forecaster, conformal, recalibration, data quality, source weights
   backtest/     Price resolution, scoring, directional test, promotion gate
   db/           Parquet store, archive reader, candidate store
-  migrations/   Alembic revisions
   scripts/      Task runner and batch entrypoints
   tests/        Pytest suite
 docs/           Write-up, architecture, specs and plans, research, changelog, experiment log
-.github/        Daily chain, freshness, schema drift, lint
+.github/        Daily chain, freshness, lint
 ```
 
 The price archive and the forecast record live in a separate private repo, `cs2-oracle-data`.
@@ -137,7 +120,7 @@ the archive covers the target date.
 - **Baselined direction.** Directional accuracy is always reported alongside the constant-call baseline and a date-clustered Pesaran–Timmermann test.
 - **Preregistration.** Experiments commit their hypothesis, metric, pass bars and minimum sample before the data exists, and every harness includes a placebo arm.
 
-Live figures are served at `GET /accuracy/summary`. No headline accuracy is quoted here
+Live figures are in `ops/prediction_accuracy.parquet`. No headline accuracy is quoted here
 until the served series has the ≥20 distinct forecast dates the test needs.
 
 ## Workflows
@@ -148,10 +131,8 @@ until the served series has the ≥20 distinct forecast dates the test needs.
 | Price Forecast | Train and forecast, chained from the Aggregator |
 | Backtest Accuracy | Resolves matured forecasts, chained from the forecast |
 | Forecast Freshness Check | Alerts when no forecast landed |
-| Schema Drift Check | Pre-merge gate: ORM models vs. Alembic migrations |
 | Lint & Smoke Test | `ruff`, `mypy`, fast tests |
 | Model Diagnostics | On-demand model scoring and A/B arms, one job per horizon |
-| Ops Sync From Postgres | On-demand repair of the monthly forecast-record partitions |
 | Archive Restore Day | On-demand repair of a deleted archive day |
 
 Enable state lives in GitHub, not git. Check it with `gh workflow list`. The runbook is

@@ -3,8 +3,7 @@
 docs/specs/2026-10-13-ops-readers-switch-design.md. `connect` opens an in-memory DuckDB
 connection with one view per table, named and typed like the Postgres table, so a reader's
 SQL runs unchanged. `reader` wraps that as a `sql -> rows` function, the same shape as
-`lambda sql: db.execute(text(sql)).fetchall()` on Postgres (`pg_reader`, kept for tests that
-seed SQLite).
+`lambda sql: db.execute(text(sql)).fetchall()` on a SQL session.
 
 The view's file list is fixed when the connection opens, so `reader` opens a fresh one per
 call: a read after tonight's partition writes sees them.
@@ -85,13 +84,6 @@ def reader(tables: Iterable[str] = TABLES, root=None) -> Callable[[str], list]:
             con.close()
 
     return read
-
-
-def pg_reader(session) -> Callable[[str], list]:
-    """Postgres as a `sql -> rows` reader, the read-twice side of a switched reader."""
-    from sqlalchemy import text
-
-    return lambda sql: session.execute(text(sql)).fetchall()
 
 
 def check_columns(read: Callable[[str], list], table: str, columns: Iterable[str]) -> None:
