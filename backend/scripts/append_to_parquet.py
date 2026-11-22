@@ -24,7 +24,8 @@ selected them. See docs/changelog/2026-08-06-price-archive-compaction.md.
 `SELECT item_slug, day, source, mean_price AS price, volume` off the prices
 file and nothing read it. `scripts/compact_price_archive.py` removed both.
 
-Input: a snapshot CSV written by the aggregator (or Supabase + backfilled CSV for backward compat).
+Input: the snapshot CSV the aggregator writes. The old Supabase + backfilled-CSV path is gone
+(Phase 4 PR 2b): `price_history` has been frozen since 2026-07-11 and CI never used it.
 
 Usage:
     python scripts/append_to_parquet.py --date 2026-07-08 --out-dir ../archive \\
@@ -34,16 +35,14 @@ Usage:
 import argparse
 import os
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
 import pandas as pd
-from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from database import engine
 from db.archive import canonical_order
 
 
@@ -60,21 +59,6 @@ def _sum_observed(s: pd.Series):
     return s.sum(min_count=1)
 
 
-FETCH_TODAY_SQL = """
-    SELECT i.item_id AS item_slug,
-           DATE(ph.timestamp) AS day,
-           ph.price,
-           ph.volume,
-           ph.median_price,
-           ph.source
-    FROM price_history ph
-    JOIN items i ON i.id = ph.item_id
-    WHERE ph.timestamp >= :day_start AND ph.timestamp < :day_end
-      AND ph.source IN ('aggregator_sync', 'steam_batch')
-    ORDER BY i.item_id, ph.timestamp
-"""
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -89,11 +73,8 @@ def main():
     )
     parser.add_argument(
         "--snapshot-csv",
+        required=True,
         help="CSV of all-source snapshot prices (item_slug, day, source, price, volume)",
-    )
-    parser.add_argument(
-        "--backfilled-csv",
-        help="Backward compat: CSV of backfilled item Steam 24h prices (item_slug, day, price, volume)",
     )
     parser.add_argument(
         "--exchange-rates-csv",
@@ -102,7 +83,6 @@ def main():
     args = parser.parse_args()
 
     day_start = datetime.strptime(args.date, "%Y-%m-%d")
-    day_end = day_start + timedelta(days=1)
     year = day_start.year
     # Current-year prices/snapshots are partitioned by month so the hot file
     # stays small (a day belongs to exactly one month). See
@@ -113,49 +93,17 @@ def main():
 
     # ── Load data ──────────────────────────────────────────────────────
     snapshots_df = None
-    legacy_frames = []
 
-    if args.snapshot_csv:
-        csv_path = Path(args.snapshot_csv)
-        if csv_path.exists():
-            snapshots_df = pd.read_csv(csv_path)
-            if snapshots_df.empty:
-                print(f"Warning: snapshot CSV {csv_path.name} is empty — no snapshots to write")
-            else:
-                snapshots_df["day"] = pd.to_datetime(snapshots_df["day"])
-                print(f"Read {len(snapshots_df)} snapshot rows from {csv_path.name}")
+    csv_path = Path(args.snapshot_csv)
+    if csv_path.exists():
+        snapshots_df = pd.read_csv(csv_path)
+        if snapshots_df.empty:
+            print(f"Warning: snapshot CSV {csv_path.name} is empty — no snapshots to write")
         else:
-            print(f"Warning: --snapshot-csv path does not exist: {csv_path} — skipping snapshot Parquet")
+            snapshots_df["day"] = pd.to_datetime(snapshots_df["day"])
+            print(f"Read {len(snapshots_df)} snapshot rows from {csv_path.name}")
     else:
-        # Legacy path: read from Supabase + backfilled CSV
-        with engine.connect() as conn:
-            snapshot_rows = conn.execute(
-                text(FETCH_TODAY_SQL),
-                {"day_start": day_start, "day_end": day_end},
-            ).fetchall()
-
-        if snapshot_rows:
-            legacy_frames.append(
-                pd.DataFrame(
-                    snapshot_rows,
-                    columns=["item_slug", "day", "price", "volume", "median_price", "source"],
-                )
-            )
-
-        if args.backfilled_csv:
-            csv_path = Path(args.backfilled_csv)
-            if csv_path.exists():
-                backfilled_df = pd.read_csv(csv_path)
-                if not backfilled_df.empty:
-                    backfilled_df["median_price"] = None
-                    if "source" not in backfilled_df.columns:
-                        backfilled_df["source"] = "aggregator_sync"
-                    legacy_frames.append(backfilled_df)
-                    print(f"Read {len(backfilled_df)} backfilled rows from {csv_path.name}")
-                else:
-                    print(f"Warning: backfilled CSV {csv_path.name} is empty")
-            else:
-                print(f"Warning: --backfilled-csv path does not exist: {csv_path} — skipping OHLCV Parquet")
+        print(f"Warning: --snapshot-csv path does not exist: {csv_path} — skipping snapshot Parquet")
 
     # ── Write prices-YYYY-MM.parquet (OHLCV, all sources) ──────────────────
     arrived = datetime.now(UTC).replace(tzinfo=None)
@@ -175,22 +123,6 @@ def main():
         _append_parquet(out_dir / f"prices-{ym}.parquet", daily, PRICE_KEYS)
         print(f"Appended {len(daily)} OHLCV rows to prices-{ym}.parquet")
 
-    if legacy_frames:
-        df = pd.concat(legacy_frames, ignore_index=True)
-        daily = (
-            df.groupby(["item_slug", "day", "source"])
-            .agg(
-                mean_price=("price", "mean"),
-                volume=("volume", _sum_observed),
-            )
-            .reset_index()
-        )
-        daily["volume"] = daily["volume"].astype("Int64")
-        daily["day"] = pd.to_datetime(daily["day"])
-        daily["ingested_at"] = arrived
-        _append_parquet(out_dir / f"prices-{ym}.parquet", daily, PRICE_KEYS)
-        print(f"Appended {len(daily)} OHLCV rows to prices-{ym}.parquet (legacy path)")
-
     # ── Write exchange-rates-YYYY.parquet ────────────────────────────
     if args.exchange_rates_csv:
         csv_path = Path(args.exchange_rates_csv)
@@ -205,7 +137,7 @@ def main():
         else:
             print(f"Warning: --exchange-rates-csv path does not exist: {csv_path} — skipping exchange-rates Parquet")
 
-    if not legacy_frames and snapshots_df is None:
+    if snapshots_df is None:
         print(f"No data found for {args.date}")
         sys.exit(0)
 
